@@ -53,20 +53,26 @@ done
 if [[ -z "$OLLAMA" ]]; then
   echo "Downloading Ollama…"
   TMPZIP="$(mktemp -d)/Ollama.zip"
-  curl -fL --progress-bar -o "$TMPZIP" "https://ollama.com/download/Ollama-darwin.zip"
-  ditto -x -k "$TMPZIP" "$HOME/Applications"
-  OLLAMA="$HOME/Applications/Ollama.app/Contents/Resources/ollama"
+  if curl -fL --progress-bar -o "$TMPZIP" "https://ollama.com/download/Ollama-darwin.zip" \
+     && ditto -x -k "$TMPZIP" "$HOME/Applications"; then
+    OLLAMA="$HOME/Applications/Ollama.app/Contents/Resources/ollama"
+  else
+    echo "Couldn't download Ollama. Get it from https://ollama.com/download later;"
+    echo "FocusGuard will download the AI model by itself once Ollama is open."
+  fi
 fi
 # Make sure the Ollama server is running
-if ! "$OLLAMA" list >/dev/null 2>&1; then
+if [[ -n "$OLLAMA" && -x "$OLLAMA" ]] && ! "$OLLAMA" list >/dev/null 2>&1; then
   if [[ -d "$HOME/Applications/Ollama.app" ]]; then open -g "$HOME/Applications/Ollama.app"
   elif [[ -d "/Applications/Ollama.app" ]]; then open -g "/Applications/Ollama.app"
   else ("$OLLAMA" serve >/dev/null 2>&1 &)
   fi
   for i in {1..30}; do "$OLLAMA" list >/dev/null 2>&1 && break; sleep 1; done
 fi
-echo "Downloading the AI model $MODEL (about 4.7 GB, only the first time)…"
-"$OLLAMA" pull "$MODEL" || echo "Couldn't download it now. Later, open Terminal and run: $OLLAMA pull $MODEL"
+if [[ -n "$OLLAMA" && -x "$OLLAMA" ]]; then
+  echo "Downloading the AI model $MODEL (about 4.7 GB, only the first time)…"
+  "$OLLAMA" pull "$MODEL" || echo "Couldn't download it now; FocusGuard will retry by itself."
+fi
 
 # ---------------------------------------------------------------- 4. Background blocker (this user only)
 say_step "Starting the background blocker"

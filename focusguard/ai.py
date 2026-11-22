@@ -7,6 +7,8 @@ Two providers:
 from __future__ import annotations
 
 import json
+import subprocess
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -29,8 +31,54 @@ def _json_call(system: str, messages: list, schema: dict,
 
 
 # ------------------------------------------------------------- Ollama (free, local)
+_pull_started = set()
+
+
+def _ollama_up(base: str) -> bool:
+    try:
+        with urllib.request.urlopen(base + "/api/tags", timeout=2):
+            return True
+    except (urllib.error.URLError, TimeoutError, ConnectionError, OSError):
+        return False
+
+
+def _ensure_ollama_running(base: str) -> None:
+    """Start the Ollama app in the background if it isn't running yet."""
+    if _ollama_up(base):
+        return
+    opened = subprocess.run(["open", "-g", "-a", "Ollama"], capture_output=True).returncode == 0
+    if not opened:
+        raise AIError("The free AI app (Ollama) isn't installed. Download it from "
+                      "ollama.com/download, open it once, then try again.")
+    for _ in range(30):
+        time.sleep(1)
+        if _ollama_up(base):
+            return
+    raise AIError("The free AI app (Ollama) is starting slowly. Try again in a moment.")
+
+
+def _start_model_download(base: str, model: str) -> None:
+    """Kick off a one-time background download of the model."""
+    if model in _pull_started:
+        return
+    _pull_started.add(model)
+
+    def pull():
+        req = urllib.request.Request(base + "/api/pull",
+                                     data=json.dumps({"model": model, "stream": False}).encode(),
+                                     headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=3600) as r:
+                r.read()
+        except (urllib.error.URLError, TimeoutError, ConnectionError, OSError):
+            _pull_started.discard(model)   # allow a retry later
+    threading.Thread(target=pull, daemon=True).start()
+
+
 def _ollama_call(cfg: dict, system: str, messages: list, schema: dict) -> dict:
     model = cfg["ollama_model"]
+    base = cfg["ollama_url"].rstrip("/")
+    _ensure_ollama_running(base)
     body = json.dumps({
         "model": model,
         "messages": [{"role": "system", "content": system}] + messages,
@@ -38,7 +86,7 @@ def _ollama_call(cfg: dict, system: str, messages: list, schema: dict) -> dict:
         "stream": False,
         "options": {"temperature": 0.2},
     }).encode()
-    req = urllib.request.Request(cfg["ollama_url"].rstrip("/") + "/api/chat", data=body,
+    req = urllib.request.Request(base + "/api/chat", data=body,
                                  headers={"Content-Type": "application/json"})
     try:
         # Generous timeout: the first call loads the model into memory.
@@ -47,11 +95,13 @@ def _ollama_call(cfg: dict, system: str, messages: list, schema: dict) -> dict:
     except urllib.error.HTTPError as e:
         detail = e.read().decode(errors="replace")
         if e.code == 404 or "not found" in detail:
-            raise AIError(f"The AI model isn't downloaded. In Terminal run: ollama pull {model}") from e
+            _start_model_download(base, model)
+            raise AIError(f"Downloading the free AI model ({model}, about 4.7 GB) now. "
+                          "Try again in a few minutes.") from e
         raise AIError(f"Ollama error {e.code}: {detail[:200]}") from e
     except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
-        raise AIError("The local AI isn't running. Open the Ollama app "
-                      "(or run: brew services start ollama).") from e
+        raise AIError("Couldn't reach the free AI app (Ollama). Make sure it's open, "
+                      "then try again.") from e
     text = (data.get("message") or {}).get("content", "")
     try:
         return json.loads(text)
