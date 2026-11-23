@@ -265,81 +265,107 @@ def check_on_task(grant: dict, samples: list) -> dict:
 
 
 # ------------------------------------------------------------- distraction check
+# The AI first says what the page is about, then picks a category. Small models judge
+# much better this way than with a bare yes/no, and only "entertainment" ever blocks.
+CATEGORIES = ["learning", "work", "tool", "navigation", "unclear", "entertainment"]
 DISTRACTION_SCHEMA = {
     "type": "object",
     "properties": {
-        "distracting": {"type": "boolean"},
+        "topic": {"type": "string"},
+        "category": {"type": "string", "enum": CATEGORIES},
         "reason": {"type": "string"},
     },
-    "required": ["distracting", "reason"],
+    "required": ["topic", "category", "reason"],
     "additionalProperties": False,
 }
 
+LEARNING = """Count as "learning" (never distracting), even when it's fun to watch:
+- science, maths, history, geography, economics, philosophy, psychology, health, nature, space;
+- explainers and "how/why X works" videos, documentaries, video essays, book or film analysis;
+- lectures, courses, lessons, tutorials and how-tos (coding, languages, music, art, cooking, \
+sport technique, school subjects, exam prep);
+- talks and interviews with experts (TED, TEDx, podcasts about ideas), news and current affairs;
+- educational channels such as Kurzgesagt, Veritasium, 3Blue1Brown, Crash Course, Khan Academy, \
+SciShow, Vsauce, Mark Rober, TED-Ed, Numberphile, Computerphile, Smarter Every Day, \
+Real Engineering, Wendover, Tom Scott, Physics Girl, MinutePhysics, Fireship, freeCodeCamp.
+"entertainment" means content watched only for fun: gaming videos and let's-plays, streams, \
+pranks, challenges, reaction videos, memes, funny compilations, vlogs, celebrity or influencer \
+drama, sports highlights, music videos, TV show clips, and Shorts or Reels scrolled for fun.
+When a title could be either, or you can't tell, answer "unclear" (that is not blocked)."""
+
 DISTRACTION_SYSTEM = """You help FocusGuard, a focus tool the user installed on their own Mac. \
-The user is on a website they marked as allowed for work. Some allowed sites \
-can also be used for distraction (e.g. YouTube for lectures vs. gaming videos, Reddit for a \
-programming question vs. memes, news sites for doom-scrolling).
+The user is on a website they marked as allowed for work. Some allowed sites can also be used \
+for distraction (YouTube for lectures vs. gaming videos, Reddit for a programming question vs. \
+memes). Judge only the page shown, from its address and title.
 
-Judge only the page shown. distracting=true only when the page is clearly entertainment, \
-social scrolling, gaming, celebrity/sports gossip, shopping for fun or similar. Work, study, \
-reference, documentation, email, tools, search pages and anything ambiguous are not distracting. \
+First write "topic": what this page is about, in a few words. Then pick "category":
+learning, work (work, study material, email, documents), tool (an app or utility), navigation \
+(home page, search results, channel or playlist page), unclear, or entertainment.
+
+""" + LEARNING + """
+
 "reason" is one short sentence addressed to the user."""
-
 
 LIMITED_SYSTEM = """You help FocusGuard, a focus tool the user installed on their own Mac. \
-The user is on a website they are allowed to use for a few minutes a day ({site}). First \
-decide what kind of site it is, then judge only the page shown:
+The user is on {site}, a website they may use for a few minutes a day. Judge only the page \
+shown, from its address and title.
 
-- Single-purpose sites built for one activity (e.g. chess.com for chess, duolingo.com for \
-languages, a typing-practice site): using the site for that activity is fine, even though it \
-is fun. distracting=true only if the page is something unrelated (e.g. chess.com's \
-celebrity-drama articles while the user is supposed to be playing chess).
-- General-purpose sites with every kind of content (e.g. youtube.com, reddit.com, \
-news sites, social media): the user allows these to learn. Learning, tutorials, lectures, \
-documentaries, how-tos and educational explainers are fine. distracting=true for \
-entertainment: gaming videos, short-video feeds watched for fun, memes, pranks, vlogs, gossip, \
-music videos for zoning out and similar. The home page, search results and ambiguous titles \
-are not distracting.
+First write "topic": what this page is about, in a few words. Then pick "category":
+learning, work, tool, navigation (home page, search results, channel or playlist page), \
+unclear, or entertainment.
+
+If {site} is built for one activity (chess.com for chess, duolingo.com for languages, a \
+typing-practice site), using it for that activity counts as "tool", even though it is fun; \
+only something unrelated there is "entertainment" (e.g. celebrity-drama articles on chess.com).
+If {site} has every kind of content (youtube.com, reddit.com, news or social media sites), the \
+user may use it to learn:
+
+""" + LEARNING + """
 
 "reason" is one short sentence addressed to the user."""
-
 
 VERIFY_SYSTEM = """You double-check FocusGuard, a focus tool the user installed on their own Mac. \
-A first check flagged the page below as distracting. Small AI models often get this wrong, and \
-a wrong flag blocks a site the user needs, so be strict about keeping it.
+A first check said the page below is entertainment, which blocks it. Small AI models often get \
+this wrong and block educational videos the user needs, so check carefully.
 
-Keep distracting=true only if the title and address clearly show entertainment content itself \
-(e.g. a gaming video, a prank, a meme compilation, a celebrity gossip article, a Short watched \
-for fun). Set distracting=false if any of these apply:
-- the reason guesses what the page "might" lead to, or gives general advice or talks about time \
-limits instead of describing this page;
-- the page is a home page, search results, a channel, playlist or navigation page;
-- the title is ambiguous or doesn't say what the content is;
-- the content is educational or informative: talks (TED, TEDx), lectures, tutorials, \
-documentaries, explainers, courses, news analysis, how-tos;
+First write "topic": what this page is about, in a few words. Then pick "category". Keep \
+"entertainment" only if the title clearly shows content watched just for fun. Pick another \
+category if the first check's reason guesses what the page "might" lead to, gives general \
+advice or talks about time limits instead of describing the page; if the page is a home page, \
+search results, a channel or playlist page ("navigation"); or if the title is ambiguous \
+("unclear").
 {extra}
+""" + LEARNING + """
+
 "reason" is one short sentence addressed to the user."""
 
-VERIFY_LIMITED = ("- the site ({site}) is built for one activity and the page is that activity "
-                  "(e.g. playing chess on chess.com).\n")
+VERIFY_LIMITED = ("The site ({site}) may be built for one activity: using it for that activity "
+                  "(e.g. playing chess on chess.com) is \"tool\", not entertainment.\n")
+
+
+def _judge(system: str, msg: str) -> dict:
+    r = _json_call(system, [{"role": "user", "content": msg}], DISTRACTION_SCHEMA, max_tokens=3000)
+    cat = r.get("category", "unclear")
+    return {"distracting": cat == "entertainment", "category": cat,
+            "topic": str(r.get("topic", "")), "reason": str(r.get("reason", ""))}
 
 
 def check_distraction(url: str, title: str, allowed_sites: list, limited_site: str = "") -> dict:
     """Judge one page. limited_site set -> page is on a daily-allowance site, not a work site.
-    A "distracting" verdict is double-checked before it counts."""
+    An "entertainment" verdict is double-checked before it counts."""
     msg = (f"Time: {time.strftime('%A %H:%M')}\n"
            f"User's work sites: {', '.join(allowed_sites)}\n"
            f"Current page URL: {url}\nCurrent page title: {title}")
     system = LIMITED_SYSTEM.format(site=limited_site) if limited_site else DISTRACTION_SYSTEM
-    r = _json_call(system, [{"role": "user", "content": msg}],
-                   DISTRACTION_SCHEMA, max_tokens=3000)
-    if not r.get("distracting"):
-        return {"distracting": False, "reason": r.get("reason", "")}
+    first = _judge(system, msg)
+    if not first["distracting"]:
+        return first
     extra = VERIFY_LIMITED.format(site=limited_site) if limited_site else ""
-    v = _json_call(VERIFY_SYSTEM.format(extra=extra),
-                   [{"role": "user", "content": msg + f"\nFirst check's reason: {r.get('reason', '')}"}],
-                   DISTRACTION_SCHEMA, max_tokens=3000)
-    if not v.get("distracting"):
-        log(f"second check overruled a distraction flag on {title[:80]!r}: {r.get('reason', '')}")
-        return {"distracting": False, "reason": v.get("reason", "")}
-    return {"distracting": True, "reason": v.get("reason") or r.get("reason", "")}
+    second = _judge(VERIFY_SYSTEM.format(extra=extra),
+                    msg + f"\nFirst check: {first['topic']} — {first['reason']}")
+    if not second["distracting"]:
+        log(f"second check overruled a distraction flag on {title[:80]!r} "
+            f"({second['category']}: {second['topic']}); first said: {first['reason']}")
+        return second
+    log(f"judged distracting: {title[:80]!r} ({second['topic']})")
+    return second
