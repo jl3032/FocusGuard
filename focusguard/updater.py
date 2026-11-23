@@ -16,8 +16,6 @@ import tarfile
 import tempfile
 import threading
 import time
-import urllib.error
-import urllib.request
 from pathlib import Path
 
 from .common import AGENT_LABEL, APP_DIR, REPO_DIR, load_config, log
@@ -54,19 +52,24 @@ def installed_version() -> str:
         return ""
 
 
+def _curl(url: str, out: Path = None, accept: str = "") -> bytes:
+    """Fetch with macOS's curl (Python's own downloader breaks on some GitHub downloads)."""
+    cmd = ["/usr/bin/curl", "-fsSL", "--max-time", "300", "--retry", "2"]
+    for k, v in _headers(**({"Accept": accept} if accept else {})).items():
+        cmd += ["-H", f"{k}: {v}"]
+    cmd += ["-o", str(out)] if out else []
+    r = subprocess.run(cmd + [url], capture_output=True, timeout=320)
+    if r.returncode != 0:
+        err = r.stderr.decode(errors="replace").strip()
+        if any(code in err for code in ("401", "403", "404")):
+            raise UpdateError("GitHub refused (is the repository private?)")
+        raise UpdateError(f"couldn't reach GitHub: {err[-200:] or r.returncode}")
+    return r.stdout
+
+
 def latest_version() -> str:
-    req = urllib.request.Request(f"https://api.github.com/repos/{REPO}/commits/{BRANCH}",
-                                 headers=_headers(Accept="application/vnd.github.sha"))
-    try:
-        with urllib.request.urlopen(req, timeout=20) as r:
-            sha = r.read().decode().strip()
-    except urllib.error.HTTPError as e:
-        if e.code in (401, 403, 404):
-            raise UpdateError("GitHub refused: the repository is private and no valid access "
-                              "token is installed") from e
-        raise UpdateError(f"GitHub error {e.code}") from e
-    except (urllib.error.URLError, TimeoutError, OSError) as e:
-        raise UpdateError(f"couldn't reach GitHub: {e}") from e
+    sha = _curl(f"https://api.github.com/repos/{REPO}/commits/{BRANCH}",
+                accept="application/vnd.github.sha").decode().strip()
     if len(sha) != 40 or any(c not in "0123456789abcdef" for c in sha):
         raise UpdateError("GitHub gave an unexpected answer")
     return sha
@@ -149,13 +152,7 @@ def update(force: bool = False) -> str:
         tmp = Path(tmp)
         os.chmod(tmp, 0o700)
         tar_path = tmp / "src.tar.gz"
-        req = urllib.request.Request(f"https://api.github.com/repos/{REPO}/tarball/{latest}",
-                                     headers=_headers())
-        try:
-            with urllib.request.urlopen(req, timeout=120) as r, open(tar_path, "wb") as out:
-                shutil.copyfileobj(r, out)
-        except (urllib.error.URLError, TimeoutError, OSError) as e:
-            raise UpdateError(f"download failed: {e}") from e
+        _curl(f"https://api.github.com/repos/{REPO}/tarball/{latest}", out=tar_path)
         new = _safe_extract(tar_path, tmp / "x")
         _check_new_code(new)
         _install(new)
