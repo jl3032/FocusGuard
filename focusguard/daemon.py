@@ -19,6 +19,8 @@ from .macos import (BROWSERS, UNMONITORABLE_BROWSERS, FrontApp, always_allowed,
                     block_page_url, is_system_process)
 
 DWELL_SECONDS = 4      # be on a site this long before the AI starts judging its pages
+SETTLE_CHECKS = 2      # see the same address + title this many checks in a row before judging
+                       # (YouTube changes the address before the title catches up)
 NOTIFY_COOLDOWN = 20
 MAX_TICK_CREDIT = 5    # seconds counted per tick at most (ignores sleep/wake gaps)
 WARN_AT = (300, 60)    # warn when this many seconds of a daily allowance are left
@@ -36,6 +38,7 @@ class Daemon:
         self.distraction_cache = {}         # url -> bool
         self.current_host = None            # site the AI is currently watching
         self.host_since = 0.0
+        self.page = ("", "", 0)             # (url, title, checks seen in a row)
         self.samples = defaultdict(lambda: deque(maxlen=12))  # grant id -> activity
         self.last_check = {}                # grant id -> ts
         self.last_notify = {}
@@ -140,11 +143,13 @@ class Daemon:
             return
 
         penalty = find_item(st["penalties"], "site", host)
-        if penalty:
-            until = time.strftime("%H:%M", time.localtime(penalty["until"]))
-            self.block_site(app, host, f"Distracting use — blocked until {until}. {penalty['reason']}")
-            return
         grant = find_item(st["grants"], "site", host)
+        # An unlock the AI gave after the block (an appeal: "that was a TED talk") wins.
+        if penalty and not (grant and grant["granted_at"] > penalty.get("at", 0)):
+            until = time.strftime("%H:%M", time.localtime(penalty["until"]))
+            self.block_site(app, host, f"Distracting use — blocked until {until}. {penalty['reason']} "
+                                       "If this was a mistake, explain it to the AI in FocusGuard.")
+            return
         if grant:
             self.watch_grant(grant, f"{title} — {url}", cfg)
             return
@@ -168,11 +173,11 @@ class Daemon:
     def check_distraction(self, app, host, allowed_domain, url, title, cfg, limited=False):
         """Have the AI judge every page on a work or limited site; block the site if it's
         distracting. On limited sites the AI judges by what the site is for."""
-        key = url[:400]
+        key = (url[:400], title[:200])
         cached = self.distraction_cache.get(key)
         if cached is not None:
             if cached:   # came back to a page already judged distracting
-                self.add_penalty(allowed_domain, "You went back to a distracting page.", cfg)
+                self.add_penalty(allowed_domain, f'You went back to a distracting page ("{title[:80]}").', cfg)
                 self.block_site(app, host, "Distracting content — site blocked for an hour.")
             return
         now = time.time()
@@ -180,14 +185,17 @@ class Daemon:
         # can't dodge the check by changing page every few seconds.
         if host != self.current_host:
             self.current_host, self.host_since = host, now
-        if now - self.host_since < DWELL_SECONDS:
-            return
+        seen = self.page[2] + 1 if (url, title) == self.page[:2] else 1
+        self.page = (url, title, seen)
+        if now - self.host_since < DWELL_SECONDS or seen < SETTLE_CHECKS:
+            return   # also wait until the title matches the page
         if any(k == "distraction" and i["host"] == host for k, i, _ in self.pending.values()):
             return   # one check per site at a time; the next page is judged when it's done
         fut = self.pool.submit(ai.check_distraction, url, title, cfg["allowed_sites"],
                                allowed_domain if limited else "")
         self.pending[("distraction", key)] = ("distraction",
-                                              {"domain": allowed_domain, "key": key, "host": host},
+                                              {"domain": allowed_domain, "key": key, "host": host,
+                                               "title": title},
                                               fut)
 
     def no_permission(self, app: str):
@@ -258,7 +266,8 @@ class Daemon:
                     self.distraction_cache.clear()
                 self.distraction_cache[info["key"]] = result["distracting"]
                 if result["distracting"]:
-                    self.add_penalty(info["domain"], result["reason"], cfg)
+                    self.add_penalty(info["domain"],
+                                     f'{result["reason"]} (page: "{info["title"][:80]}")', cfg)
                     # The next tick sees the penalty and redirects the tab.
 
             elif kind == "grant" and not result["on_task"]:
@@ -286,7 +295,7 @@ class Daemon:
         def add(s):
             if not find_item(s["penalties"], "site", domain):
                 s["penalties"].append({"kind": "site", "target": domain, "reason": reason,
-                                       "until": time.time() + minutes * 60})
+                                       "at": time.time(), "until": time.time() + minutes * 60})
         update_state(add)
         self.notify("FocusGuard", f"{domain} blocked for {minutes} min: {reason}")
         log(f"penalty {domain} {minutes}m: {reason}")

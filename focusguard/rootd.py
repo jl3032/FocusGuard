@@ -164,8 +164,9 @@ class RootService:
             for it in limited_items(cfg)) or "none"))
         lines.append("Currently unlocked: " + (", ".join(
             f"{g['target']} ({g['purpose']})" for g in st["grants"]) or "nothing"))
-        lines.append("Distraction penalties (cannot be lifted): " + (", ".join(
-            f"{p['target']} until {time.strftime('%H:%M', time.localtime(p['until']))}"
+        lines.append("Distraction penalties: " + (", ".join(
+            f"{p['target']} until {time.strftime('%H:%M', time.localtime(p['until']))} "
+            f"(reason: {p['reason']})"
             for p in st["penalties"]) or "none"))
         lines.append("Recently blocked: " + (", ".join(
             f"{b['kind']} {b['target']} ({b['reason']})" for b in st["recent_blocks"][-8:]) or "nothing"))
