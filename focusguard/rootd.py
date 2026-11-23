@@ -20,7 +20,7 @@ import time
 import traceback
 from dataclasses import asdict
 
-from . import ai
+from . import ai, updater
 from .common import (AGENT_LABEL, AGENT_PLIST, GUI_SCRIPT, SOCKET_PATH, find_item,
                      limited_items, load_config, load_state, log, new_id, normalize_domain,
                      seconds_left, update_state)
@@ -49,6 +49,7 @@ class RootService:
     def __init__(self):
         self.lock = threading.Lock()           # guards the policy engine
         self.chat_lock = threading.Lock()
+        self.update_lock = threading.Lock()
         self.policy = Daemon(trusted_gui=self.is_gui_pid)
         self.chat = []                         # the unblock conversation lives here, not in the GUI
         self.last_agent = time.time()
@@ -144,7 +145,10 @@ class RootService:
             log("pause ended early by user")
             return {"ok": True}
         if op == "ping":
-            return {"ok": True}
+            return {"ok": True, **updater.status()}
+        if op == "update":
+            with self.update_lock:
+                return {"message": updater.check_and_apply()}
         return {"error": "Unknown request."}
 
     # ------------------------------------------------------------ AI unblock chat
@@ -269,6 +273,8 @@ def main():
     log("root service started")
     svc = RootService()
     threading.Thread(target=svc.serve, daemon=True).start()
+    if not TESTING:
+        threading.Thread(target=updater.loop, daemon=True).start()
     svc.watchdog()
 
 

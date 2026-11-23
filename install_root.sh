@@ -20,7 +20,7 @@ launchctl bootout "gui/$TUID/$AGENT_LABEL" 2>/dev/null || true
 
 # ---- code + Python environment (root-owned: the blocked user can't change them)
 mkdir -p "$SUPPORT"
-rm -rf "$CODE"
+rm -rf "$CODE" "$SUPPORT/app.new" "$SUPPORT/app.prev" "$SUPPORT/app.bad" "$SUPPORT/version.txt"
 mkdir -p "$CODE"
 cp -R "$STAGE/focusguard" "$STAGE/assets" "$STAGE/launch" "$STAGE/requirements.txt" "$CODE/"
 cp "$STAGE/uninstall_root.sh" "$SUPPORT/uninstall_root.sh"

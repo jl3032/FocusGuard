@@ -337,6 +337,7 @@ class Main(ttk.Frame):
         self.cfg = load_config()
         self.busy = False
         self.service_ok = True
+        self.version = ""
 
         top = ttk.Frame(self)
         top.pack(fill="x")
@@ -388,6 +389,12 @@ class Main(ttk.Frame):
         self.entry.bind("<Return>", lambda e: self.send())
         self.send_btn = ttk.Button(row, text="Send", command=self.send)
         self.send_btn.pack(side="left", padx=(6, 0))
+        foot = ttk.Frame(self)
+        foot.pack(fill="x", pady=(8, 0))
+        self.version_label = ttk.Label(foot, text="", foreground="#888")
+        self.version_label.pack(side="left")
+        self.update_btn = ttk.Button(foot, text="Check for updates", command=self.check_updates)
+        self.update_btn.pack(side="right")
 
         self.say("sys", 'Example: "I need youtube.com to watch the biology lecture my teacher assigned."')
         self.refresh()
@@ -441,15 +448,34 @@ class Main(ttk.Frame):
         for b in reversed(st["recent_blocks"][-8:]):
             ago = int((now - b["at"]) // 60)
             self.blocks_box.insert("end", f"{b['target']} ({ago}m ago) — {b['reason']}")
+        self.version_label.config(text=f"Version {self.version} · updates install automatically"
+                                  if self.version else "")
         self.after(2000, self.refresh)
         threading.Thread(target=self.check_service, daemon=True).start()
 
     def check_service(self):
         try:
-            request("ping", timeout=2)
+            self.version = request("ping", timeout=2).get("version", "")
             self.service_ok = True
         except ServiceError:
             self.service_ok = False
+
+    def check_updates(self):
+        self.update_btn.state(["disabled"])
+        self.say("sys", "Checking for updates…")
+
+        def work():
+            try:
+                msg = request("update", timeout=600)["message"]
+                if msg.startswith("updated"):
+                    msg = (f"FocusGuard {msg}. It restarts in the background; close and reopen "
+                           "this window to see the new version.")
+                elif msg == "up to date":
+                    msg = "You already have the latest version."
+            except ServiceError as e:
+                msg = str(e)
+            self.after(0, lambda: (self.say("sys", msg), self.update_btn.state(["!disabled"])))
+        threading.Thread(target=work, daemon=True).start()
 
     def pause(self):
         minutes = simpledialog.askinteger(

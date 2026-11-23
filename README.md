@@ -58,7 +58,7 @@ You need an **administrator's name and password** once during install.
 5. **Wait for it to finish.** It sets up the free AI too (about a 4.7 GB download the first time), then opens FocusGuard. Pick the apps and sites, then an administrator approves the settings with their password.
 6. When macOS asks to let python control Safari/Chrome or System Events, click **Allow**.
 
-Updating works the same way: download the new ZIP and run the installer again. Your settings are kept.
+**Updates install themselves.** About 2 minutes after the Mac starts, and then every 6 hours, FocusGuard checks this GitHub repo for a new version. It downloads it, makes sure it loads, swaps it in and restarts in the background; settings are kept. If a new version can't start, it switches back to the previous one. The **Check for updates** button in the app does it right away. (Only changes to the installer itself need a reinstall.)
 
 If the Mac has never used Python, a popup asks to install Apple's Command Line Tools. Click **Install**, wait, then run the installer again.
 
@@ -88,6 +88,7 @@ Change them in the app (administrator password needed). They're stored in `/Libr
 ## Files
 
 - `focusguard/rootd.py`: root service (socket server, AI chat, watchdog)
+- `focusguard/updater.py`: automatic updates from GitHub, with rollback
 - `focusguard/daemon.py`: decision engine (what to block, daily time, unlocks, penalties)
 - `focusguard/agent.py`: user-session helper (reads front app/tab, carries out actions)
 - `focusguard/admin.py`: root-only tool behind the administrator password (settings, pause)
