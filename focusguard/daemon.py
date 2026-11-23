@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from . import ai
 from .common import (domain_matches, find_item, host_of, limited_items, load_config,
                      load_state, log, seconds_left, update_state, usage_key)
-from .macos import (ALWAYS_ALLOWED, BROWSERS, UNMONITORABLE_BROWSERS, block_page_url,
+from .macos import (ALWAYS_ALLOWED, AutomationDenied, BROWSERS, UNMONITORABLE_BROWSERS, block_page_url,
                     browser_tab, frontmost_app, notify, quit_app, redirect_tab,
                     window_title)
 
@@ -89,7 +89,13 @@ class Daemon:
 
     # ------------------------------------------------------------ browsers
     def handle_browser(self, app: str, cfg: dict, st: dict):
-        tab = browser_tab(app)
+        try:
+            tab = browser_tab(app)
+        except AutomationDenied:
+            self.no_permission(app)
+            return
+        if app in st["no_permission"]:
+            update_state(lambda s: s["no_permission"].pop(app, None))
         if not tab:
             return
         url, title = tab
@@ -139,6 +145,17 @@ class Daemon:
             return
         fut = self.pool.submit(ai.check_distraction, url, title, cfg["allowed_sites"])
         self.pending[key] = ("distraction", {"domain": allowed_domain, "key": key}, fut)
+
+    def no_permission(self, app: str):
+        """Websites can't be checked in this browser until the user allows Automation."""
+        update_state(lambda s: s["no_permission"].__setitem__(app, time.time()))
+        key = "perm:" + app
+        if time.time() - self.last_notify.get(key, 0) > 300:
+            self.last_notify[key] = time.time()
+            notify("FocusGuard can't check websites",
+                   f"Allow it to control {app}: System Settings > Privacy & Security > "
+                   "Automation > python > turn on " + app)
+            log(f"automation permission denied for {app}; websites are not being checked")
 
     # ------------------------------------------------------------ limited items
     def spend(self, item: dict, st: dict) -> bool:

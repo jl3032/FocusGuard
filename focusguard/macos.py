@@ -35,6 +35,10 @@ class OSAError(Exception):
     pass
 
 
+class AutomationDenied(Exception):
+    """macOS refused to let FocusGuard control this app (Automation permission)."""
+
+
 def _q(s: str) -> str:
     """Quote a Python string as an AppleScript string literal."""
     return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
@@ -102,7 +106,10 @@ def browser_tab(app_name: str):
         return None
     try:
         out = osa(script)
-    except OSAError:
+    except OSAError as e:
+        msg = str(e)
+        if "-1743" in msg or "Not authorized" in msg or "not allowed" in msg.lower():
+            raise AutomationDenied(app_name) from e
         return None
     if not out:
         return None

@@ -50,6 +50,7 @@ DEFAULT_STATE = {
     "penalties": [],      # 1-hour distraction blocks
     "recent_blocks": [],  # what was blocked lately (gives the AI context)
     "usage": {"day": "", "seconds": {}},  # time spent today on limited items
+    "no_permission": {},  # browser -> last time macOS refused to let us read its tabs
 }
 
 
@@ -85,6 +86,7 @@ def _prune(st: dict) -> dict:
     st["grants"] = [g for g in st["grants"] if g["expires_at"] > now]
     st["penalties"] = [p for p in st["penalties"] if p["until"] > now]
     st["recent_blocks"] = st["recent_blocks"][-15:]
+    st["no_permission"] = {k: t for k, t in st["no_permission"].items() if now - t < 30}
     st.pop("session", None)   # left over from the old focus-session version
     if st["usage"].get("day") != today():
         st["usage"] = {"day": today(), "seconds": {}}

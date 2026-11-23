@@ -1,6 +1,7 @@
 """FocusGuard window: setup (work / limited lists), daily allowances, and the AI unblock chat."""
 from __future__ import annotations
 
+import subprocess
 import threading
 import time
 import tkinter as tk
@@ -297,6 +298,15 @@ class Main(ttk.Frame):
         self.setup_btn = ttk.Button(top, text="Edit setup", command=app.show_onboarding)
         self.setup_btn.pack(side="right")
 
+        self.perm_bar = ttk.Frame(self)
+        self.perm_label = ttk.Label(self.perm_bar, foreground="#c0392b", wraplength=560,
+                                    font=("Helvetica", 12, "bold"))
+        self.perm_label.pack(side="left")
+        ttk.Button(self.perm_bar, text="Open Automation settings",
+                   command=lambda: subprocess.run(
+                       ["open", "x-apple.systempreferences:com.apple.preference.security"
+                                "?Privacy_Automation"])).pack(side="right")
+        self.perm_shown = False
         ttk.Label(self, text="Work apps and sites always work. Everything else is blocked.",
                   foreground="#555").pack(anchor="w", pady=(2, 8))
         ttk.Label(self, text="Limited for today (resets at midnight)").pack(anchor="w")
@@ -337,6 +347,17 @@ class Main(ttk.Frame):
         cfg, st = load_config(), load_state()
         now = time.time()
         self.status.config(text="Blocking is on", foreground="#2a7")
+        denied = sorted(st["no_permission"])
+        if denied:
+            self.perm_label.config(text=f"Websites are NOT being blocked in {', '.join(denied)}: "
+                                        "macOS hasn't allowed FocusGuard to control it. Turn on "
+                                        "python → " + ", ".join(denied) + " under Automation.")
+            if not self.perm_shown:
+                self.perm_bar.pack(fill="x", pady=(4, 4), after=self.status.master)
+                self.perm_shown = True
+        elif self.perm_shown:
+            self.perm_bar.pack_forget()
+            self.perm_shown = False
         self.limited_box.delete(0, "end")
         for it in limited_items(cfg):
             left = seconds_left(it, st)
