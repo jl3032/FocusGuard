@@ -202,14 +202,15 @@ class Daemon:
             self.current_host, self.host_since = host, now
         seen = self.page[2] + 1 if (url, title) == self.page[:2] else 1
         self.page = (url, title, seen)
-        if now - self.host_since < DWELL_SECONDS or seen < SETTLE_CHECKS:
+        feed = is_feed_page(url)   # Shorts/Reels/TikTok: judge right away, one check only
+        if (now - self.host_since < DWELL_SECONDS and not feed) or seen < SETTLE_CHECKS:
             return False   # also wait until the title matches the page
         if ai.chat_active.is_set():
             return False   # the user is waiting for the chat; check this page afterwards
         if any(k == "distraction" and i["host"] == host for k, i, _ in self.pending.values()):
             return False   # one check per site at a time; the next page is judged when it's done
         fut = self.pool.submit(ai.check_distraction, url, title, cfg["allowed_sites"],
-                               allowed_domain if limited else "")
+                               allowed_domain if limited else "", quick=feed)
         self.pending[("distraction", key)] = ("distraction",
                                               {"domain": allowed_domain, "key": key, "host": host,
                                                "title": title},
@@ -360,6 +361,19 @@ class Daemon:
 
 SEARCH_SEGMENTS = {"search", "results"}
 NAV_PATHS = {"/feed/subscriptions", "/feed/you", "/feed/history", "/feed/library", "/feed/playlists"}
+
+
+FEED_PATHS = ("youtube.com/shorts/", "instagram.com/reel/", "instagram.com/reels/",
+              "facebook.com/reel/", "tiktok.com/@", "tiktok.com/foryou")
+
+
+def is_feed_page(url: str) -> bool:
+    """A clip in a swipe-to-the-next feed. These are judged without the usual waits,
+    because each clip is only on screen for a few seconds."""
+    u = url.lower().split("://", 1)[-1]
+    u = u[4:] if u.startswith("www.") else u
+    u = u[2:] if u.startswith("m.") else u
+    return any(u.startswith(p) for p in FEED_PATHS)
 
 
 def is_navigation_page(url: str) -> bool:

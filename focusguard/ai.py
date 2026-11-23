@@ -460,15 +460,20 @@ def _judge(system: str, msg: str) -> dict:
             "topic": str(r.get("topic", "")), "reason": str(r.get("reason", ""))}
 
 
-def check_distraction(url: str, title: str, allowed_sites: list, limited_site: str = "") -> dict:
+def check_distraction(url: str, title: str, allowed_sites: list, limited_site: str = "",
+                      quick: bool = False) -> dict:
     """Judge one page. limited_site set -> page is on a daily-allowance site, not a work site.
-    An "entertainment" verdict is double-checked before it counts."""
+    An "entertainment" verdict is double-checked before it counts, except with quick=True
+    (a short clip in a feed: a wrong call only blocks that clip, and speed matters more)."""
     msg = (f"Time: {time.strftime('%A %H:%M')}\n"
            f"User's work sites: {', '.join(allowed_sites)}\n"
            f"Current page URL: {url}\nCurrent page title: {title}")
     system = LIMITED_SYSTEM.format(site=limited_site) if limited_site else DISTRACTION_SYSTEM
     first = _judge(system, msg)
     if not first["distracting"]:
+        return first
+    if quick:
+        log(f"judged distracting (feed clip): {title[:80]!r} ({first['topic']})")
         return first
     extra = VERIFY_LIMITED.format(site=limited_site) if limited_site else ""
     second = _judge(VERIFY_SYSTEM.format(extra=extra),
