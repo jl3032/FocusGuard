@@ -176,17 +176,6 @@ def log(msg: str) -> None:
 
 
 # ---------------------------------------------------------------- matching
-# Platforms where anyone can host a site (lots of "unblocked games" live here).
-# Allowing "google.com" or "vercel.app" doesn't cover every site hosted on them;
-# list the exact site (e.g. "myproject.vercel.app") to allow one.
-HOSTING_PLATFORMS = (
-    "sites.google.com", "vercel.app", "github.io", "netlify.app", "pages.dev", "web.app",
-    "firebaseapp.com", "glitch.me", "replit.app", "repl.co", "onrender.com",
-    "herokuapp.com", "surge.sh", "neocities.org", "weebly.com", "wixsite.com",
-    "blogspot.com", "itch.io", "webflow.io", "notion.site", "carrd.co", "godaddysites.com",
-)
-
-
 def normalize_domain(text: str) -> str:
     text = text.strip().lower()
     if not text:
@@ -214,14 +203,8 @@ def domain_matches(host: str, domain: str) -> bool:
 
 
 def site_covers(host: str, domain: str) -> bool:
-    """Does a listed domain cover this host? Like domain_matches, except a broad entry
-    doesn't cover everything hosted on a hosting platform under it."""
-    if not domain or not domain_matches(host, domain):
-        return False
-    platform = next((p for p in HOSTING_PLATFORMS if domain_matches(host, p)), None)
-    if platform and domain_matches(platform, domain) and host != domain:
-        return False
-    return True
+    """Does a listed domain cover this host? "vercel.app" covers "x.vercel.app"."""
+    return bool(domain) and domain_matches(host, domain)
 
 
 def match_site(host: str, domains: list):

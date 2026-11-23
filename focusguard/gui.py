@@ -10,7 +10,7 @@ import time
 import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
 
-from .common import (HOSTING_PLATFORMS, ServiceError, api_key_saved, limited_items,
+from .common import (ServiceError, api_key_saved, limited_items,
                      load_config, load_state, normalize_domain, paused, request, seconds_left)
 from .ai import MODEL_SIZES, auto_size
 from .macos import BROWSERS, UNMONITORABLE_BROWSERS, hardware, installed_apps, run_admin
@@ -185,9 +185,8 @@ class Onboarding(ttk.Frame):
                      "These always work; other sites are blocked (you can give some a daily time "
                      "allowance on the next step). Allowed sites are still watched: if you start "
                      "doing something distracting on one (e.g. gaming videos on YouTube), that page "
-                     "is blocked; do it twice and the site is blocked for an hour. Subdomains are included automatically, except on hosting "
-                     "platforms (vercel.app, github.io, sites.google.com…), where you list the exact "
-                     "site, e.g. myproject.vercel.app.")
+                     "is blocked; do it twice and the site is blocked for an hour. Subdomains are included: "
+                     "vercel.app covers every site ending in .vercel.app.")
         grid = ttk.Frame(self.body)
         grid.pack(anchor="w", fill="x")
         chosen = set(self.cfg["allowed_sites"])
@@ -310,12 +309,6 @@ class Onboarding(ttk.Frame):
             if not messagebox.askyesno("FocusGuard", "You listed websites but didn't allow a "
                                        "browser, so no websites will work. Continue anyway?"):
                 return
-        broad = [d for d in sites if d in HOSTING_PLATFORMS]
-        if broad and not messagebox.askyesno(
-                "FocusGuard", f"{', '.join(broad)} is a hosting platform: listing it only allows "
-                "that exact address, not the sites hosted on it (lots of game sites live there). "
-                "Add the exact sites you need, e.g. myproject.vercel.app.\n\nSave anyway?"):
-            return
         picked = {a.lower() for a in apps} | {x["target"].lower() for x in lim_apps}
         new = {
             "allowed_apps": sorted(set(apps), key=str.lower), "allowed_sites": sites,

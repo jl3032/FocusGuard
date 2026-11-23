@@ -29,7 +29,6 @@ Workarounds it closes:
 - **Renaming a game** to an allowed app's name (`Notes.app`, `Finder.app`): apps are matched by location and bundle ID.
 - **Games run through Python**: "Python" is only allowed when it's FocusGuard's own window.
 - **Turning off the browser permission**: the browser is closed instead of websites going unchecked.
-- **Game sites on hosting platforms** (`*.vercel.app`, `*.github.io`, `sites.google.com`, …): allowing `google.com` or `vercel.app` doesn't cover them; list the exact site.
 - **Talking the AI into it** ("my parent said it's fine"): the AI is told to ignore such claims, and the chat history lives in the root service, so it can't be faked.
 
 For any of this to hold, **the blocked account must be a Standard user** (System Settings → Users & Groups) and the administrator password must belong to someone else.
