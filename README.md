@@ -7,7 +7,7 @@ A self-control tool for macOS that applies to **one Mac user account only**. Blo
 - **Everything else is blocked**, e.g. ea.com when only chess.com is on your limited list.
 - **Built-in AI gatekeeper:** open FocusGuard and tell the AI why you need something that's blocked. If your reason is specific and real, it unlocks the app or site for a limited time and writes down what you said you'd do there.
 - **Monitoring after an unlock:** about every 60 seconds the AI compares your recent pages or window titles with that stated purpose. If you're off task, access is taken away and the item is blocked again.
-- **Distraction penalty:** your work sites are still watched. If you start doing something distracting on one (gaming videos on YouTube, r/all, Shorts or Reels), that whole site is blocked for an hour.
+- **AI watches every page on your work sites.** It reads each page you open (even while you scroll Shorts or Reels) and judges whether it is work. If it is distracting, e.g. gaming videos on YouTube, that whole site is blocked for an hour.
 - **Changing your lists** needs you to type a confirmation sentence, so it isn't a one-click escape.
 
 ## Why it only affects one user

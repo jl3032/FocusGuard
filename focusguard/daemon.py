@@ -15,17 +15,11 @@ from .macos import (ALWAYS_ALLOWED, AutomationDenied, BROWSERS, UNMONITORABLE_BR
                     window_title)
 
 POLL_SECONDS = 1.0     # how often the front app / tab is checked
-DWELL_SECONDS = 8      # stay on a page this long before the AI judges it
+DWELL_SECONDS = 4      # be on a site this long before the AI starts judging its pages
 NOTIFY_COOLDOWN = 20
 MAX_TICK_CREDIT = 5    # seconds counted per tick at most (ignores sleep/wake gaps)
 WARN_AT = (300, 60)    # warn when this many seconds of a daily allowance are left
 
-# Obvious time sinks on otherwise-useful sites: penalised instantly, no AI call.
-QUICK_DISTRACTIONS = [
-    "youtube.com/shorts", "instagram.com/reels", "instagram.com/explore",
-    "facebook.com/watch", "facebook.com/reel", "reddit.com/r/all",
-    "reddit.com/r/popular", "tiktok.com", "twitch.tv",
-]
 
 
 class Daemon:
@@ -33,7 +27,8 @@ class Daemon:
         self.pool = ThreadPoolExecutor(max_workers=2)
         self.pending = {}                   # key -> (kind, info, future)
         self.distraction_cache = {}         # (host, title) -> bool
-        self.first_seen = {}                # (host, title) -> ts
+        self.current_host = None            # site the AI is currently watching
+        self.host_since = 0.0
         self.samples = defaultdict(lambda: deque(maxlen=12))  # grant id -> activity
         self.last_check = {}                # grant id -> ts
         self.last_notify = {}
@@ -122,10 +117,6 @@ class Daemon:
             return
         limited = find_item(limited_items(cfg), "site", host)
         if limited:
-            if any(p in url.lower() for p in QUICK_DISTRACTIONS):
-                self.block_site(app, host, "Shorts, Reels and similar endless feeds are always "
-                                           "blocked. Regular videos/pages still work.")
-                return
             if not self.spend(limited, st):
                 self.block_site(app, host, "Today's time on this site is used up. "
                                            "It unblocks at midnight.")
@@ -133,37 +124,27 @@ class Daemon:
         self.block_site(app, host, "Not on your allowed list. Open FocusGuard and tell it why you need this.")
 
     def check_distraction(self, app, host, allowed_domain, url, title, cfg):
-        lowered = url.lower()
-        if any(p in lowered for p in QUICK_DISTRACTIONS):
-            self.add_penalty(allowed_domain, "That part of the site is a known time sink.", cfg)
-            self.block_site(app, host, "Distracting content — site blocked for an hour.")
-            return
-        key = (host, title.strip()[:200])
-        if key in self.distraction_cache:
-            if self.distraction_cache[key]:   # came back after a penalty expired
+        """Have the AI judge every page on a work site; block the site if it's distracting."""
+        key = url[:400]
+        cached = self.distraction_cache.get(key)
+        if cached is not None:
+            if cached:   # came back to a page already judged distracting
                 self.add_penalty(allowed_domain, "You went back to a distracting page.", cfg)
                 self.block_site(app, host, "Distracting content — site blocked for an hour.")
             return
-        if key in self.pending:
-            return
         now = time.time()
-        self.first_seen = {k: t for k, t in self.first_seen.items() if now - t < 600}
-        start = self.first_seen.setdefault(key, now)
-        if now - start < DWELL_SECONDS:
+        # The wait is per site, not per page, so fast scrolling (Shorts, Reels)
+        # can't dodge the check by changing page every few seconds.
+        if host != self.current_host:
+            self.current_host, self.host_since = host, now
+        if now - self.host_since < DWELL_SECONDS:
             return
+        if any(k == "distraction" and i["host"] == host for k, i, _ in self.pending.values()):
+            return   # one check per site at a time; the next page is judged when it's done
         fut = self.pool.submit(ai.check_distraction, url, title, cfg["allowed_sites"])
-        self.pending[key] = ("distraction", {"domain": allowed_domain, "key": key}, fut)
-
-    def no_permission(self, app: str):
-        """Websites can't be checked in this browser until the user allows Automation."""
-        update_state(lambda s: s["no_permission"].__setitem__(app, time.time()))
-        key = "perm:" + app
-        if time.time() - self.last_notify.get(key, 0) > 300:
-            self.last_notify[key] = time.time()
-            notify("FocusGuard can't check websites",
-                   f"Allow it to control {app}: System Settings > Privacy & Security > "
-                   "Automation > python > turn on " + app)
-            log(f"automation permission denied for {app}; websites are not being checked")
+        self.pending[("distraction", key)] = ("distraction",
+                                              {"domain": allowed_domain, "key": key, "host": host},
+                                              fut)
 
     # ------------------------------------------------------------ limited items
     def spend(self, item: dict, st: dict) -> bool:
