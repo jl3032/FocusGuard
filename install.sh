@@ -7,7 +7,7 @@ set -euo pipefail
 SRC="${0:A:h}"
 TARGET_USER="$(id -un)"
 TARGET_UID="$(id -u)"
-MODEL="qwen2.5:7b"
+MODEL="qwen2.5vl:7b"
 OLD_LABEL="com.focusguard.daemon"
 OLD_DIR="$HOME/Library/Application Support/FocusGuard"
 
@@ -73,16 +73,22 @@ PICK="$("$PY" -I -c 'import sys; sys.path.insert(0, sys.argv[1])
 from focusguard.ai import MODEL_SIZES, auto_size
 from focusguard.macos import hardware
 hw = hardware(); m = MODEL_SIZES[auto_size(hw)]
-print(m["model"], m["gb"], hw["chip"].replace(" ", "_"), hw["memory_gb"])' "$SRC" 2>/dev/null || true)"
+print(m["model"], m["vision"], m["gb"], hw["chip"].replace(" ", "_"), hw["memory_gb"])' "$SRC" 2>/dev/null || true)"
+VISION=""
 if [[ -n "$PICK" ]]; then
-  read -r MODEL MODEL_GB CHIP MEM <<< "$PICK"
+  read -r MODEL VISION MODEL_GB CHIP MEM <<< "$PICK"
   echo "This Mac: ${CHIP//_/ }, $MEM GB memory, so using $MODEL."
+  [[ "$VISION" == "$MODEL" ]] && VISION=""
 else
-  MODEL_GB="4.7"
+  MODEL_GB="6"
 fi
 if [[ -n "$OLLAMA" && -x "$OLLAMA" ]]; then
   echo "Downloading the AI model $MODEL (about $MODEL_GB GB, only the first time)…"
   "$OLLAMA" pull "$MODEL" || echo "Couldn't download it now; FocusGuard will retry by itself."
+  if [[ -n "$VISION" ]]; then
+    echo "Downloading the screen-reading model $VISION…"
+    "$OLLAMA" pull "$VISION" || echo "Couldn't download it now; FocusGuard will retry by itself."
+  fi
 fi
 
 # ---------------------------------------------------------------- 4. Protected part (administrator)

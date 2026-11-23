@@ -104,7 +104,7 @@ class RootService:
         try:
             conn.settimeout(10)
             data = b""
-            while not data.endswith(b"\n") and len(data) < 1_000_000:
+            while not data.endswith(b"\n") and len(data) < 8_000_000:   # screenshots
                 chunk = conn.recv(65536)
                 if not chunk:
                     break
@@ -133,7 +133,8 @@ class RootService:
                 self.last_agent = time.time()
                 actions = self.policy.tick(req.get("obs") or {})
                 titles = sorted(self.policy.want_titles)
-            return {"actions": actions, "want_titles": titles}
+                screen = self.policy.want_screen
+            return {"actions": actions, "want_titles": titles, "want_screen": screen}
         if op == "chat":
             return self.chat_turn(str(req.get("text", ""))[:2000])
         if op == "chat_reset":

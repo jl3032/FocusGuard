@@ -1,8 +1,12 @@
 """Thin wrappers around macOS command-line tools (lsappinfo, osascript)."""
 from __future__ import annotations
 
+import base64
+import ctypes
 import os
 import plistlib
+import shutil
+import tempfile
 import re
 import shlex
 import signal
@@ -224,6 +228,41 @@ def hardware() -> dict:
     # hw.optional.arm64 is 1 on Apple Silicon even when running under Rosetta.
     return {"chip": sysctl("machdep.cpu.brand_string") or "unknown chip",
             "apple_silicon": sysctl("hw.optional.arm64") == "1", "memory_gb": mem}
+
+
+def screen_access(ask: bool = False) -> bool:
+    """Has macOS allowed this process to record the screen? ask=True shows the request
+    (and adds FocusGuard's helper to System Settings > Screen Recording)."""
+    try:
+        cg = ctypes.cdll.LoadLibrary(
+            "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
+        fn = cg.CGRequestScreenCaptureAccess if ask else cg.CGPreflightScreenCaptureAccess
+        fn.restype = ctypes.c_bool
+        return bool(fn())
+    except (OSError, AttributeError):
+        return False
+
+
+SCREENSHOT_PX = 1280   # longest side; enough to read a page, small enough to judge quickly
+
+
+def capture_screen():
+    """Screenshot of the main display as base64 JPEG, or None. Nothing is kept on disk."""
+    d = tempfile.mkdtemp(prefix="fg-")
+    try:
+        raw, small = os.path.join(d, "s.jpg"), os.path.join(d, "t.jpg")
+        r = subprocess.run(["screencapture", "-x", "-m", "-t", "jpg", raw],
+                           capture_output=True, timeout=10)
+        if r.returncode != 0 or not os.path.exists(raw):
+            return None
+        subprocess.run(["sips", "-Z", str(SCREENSHOT_PX), "-s", "formatOptions", "60", raw,
+                        "--out", small], capture_output=True, timeout=10)
+        with open(small if os.path.exists(small) else raw, "rb") as f:
+            return base64.b64encode(f.read()).decode()
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def kill_pid(pid: int) -> None:

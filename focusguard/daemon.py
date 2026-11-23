@@ -17,13 +17,16 @@ from . import ai
 from .common import (find_item, host_of, limited_items, load_config, load_state, log,
                      match_site, paused, seconds_left, update_state, usage_key)
 from .macos import (BROWSERS, UNMONITORABLE_BROWSERS, FrontApp, always_allowed,
-                    block_page_url, is_system_process)
+                    block_page_url, hardware, is_system_process)
 
 DWELL_SECONDS = 4      # be on a site this long before the AI starts judging its pages
 SETTLE_CHECKS = 2      # see the same address + title this many checks in a row before judging
                        # (YouTube changes the address before the title catches up)
 STRIKE_WINDOW = 30 * 60   # a 2nd distracting page on a site within this long blocks the whole site
 NOTIFY_COOLDOWN = 20
+# How often the AI looks at the screen while a page stays open (a page can turn into a game
+# without its address or title changing). Looking at a picture is slow on Intel Macs.
+SCREEN_EVERY_APPLE, SCREEN_EVERY_INTEL = 45, 120
 BLOCK_NOW_SECONDS = 120   # a verdict still blocks the user's current tab on that site this long
 MAX_TICK_CREDIT = 5    # seconds counted per tick at most (ignores sleep/wake gaps)
 WARN_AT = (300, 60)    # warn when this many seconds of a daily allowance are left
@@ -52,12 +55,18 @@ class Daemon:
         self.was_paused = False
         self.actions = []
         self.want_titles = set()            # apps whose window title we want next time
+        self.want_screen = False            # ask the helper for a screenshot next time
+        self.screen_seen = {}               # page key -> when the AI last looked at it
+        self.obs = {}
+        self.screen_every = (SCREEN_EVERY_APPLE if hardware()["apple_silicon"]
+                             else SCREEN_EVERY_INTEL)
 
     # ------------------------------------------------------------ entry point
     def tick(self, obs: dict) -> list:
         """One check. obs = {"app": {...FrontApp fields} | None, "tab": [url, title] | None,
         "tab_denied": bool, "title": str, "no_agent": bool}. Returns actions to carry out."""
         self.actions = []
+        self.obs, self.want_screen = obs, False
         try:
             self._tick(obs)
         except Exception:
@@ -139,6 +148,12 @@ class Daemon:
             return
         if app in st["no_permission"]:
             update_state(lambda s: s["no_permission"].pop(app, None))
+        if obs.get("screen_denied") and time.time() - self.last_notify.get("perm:screen", 0) > 600:
+            self.last_notify["perm:screen"] = time.time()
+            self.notify("FocusGuard can't see the screen",
+                        "Turn on Screen Recording for python: System Settings > Privacy & "
+                        "Security > Screen Recording.")
+            log("screen recording permission missing; judging by page titles only")
         tab = obs.get("tab")
         if not tab:
             return
@@ -185,16 +200,22 @@ class Daemon:
             self.block_site(app, host, f"This looks distracting: {hit[0]} Another distracting "
                                        "page here will block the whole site for a while.")
             return True
-        if is_navigation_page(url):
-            return False   # home and search pages: judge what the user opens from them
         key = (url[:400], title[:200])
+        if is_navigation_page(url):
+            # Home and search pages: the title says little, so don't judge it. But a site's
+            # front page can itself be a game, so still look at the screen.
+            self.look_at_screen(key, host, allowed_domain, url, title, cfg, limited)
+            return False
         cached = self.distraction_cache.get(key)
         if cached is not None:
             if cached:   # a page already judged distracting
                 self.block_site(app, host, f'This page looks distracting ("{title[:80]}"). '
                                            "Another distracting page here will block the whole "
                                            "site for a while.")
-            return bool(cached)
+                return True
+            # The title looked fine; now look at what's actually on the screen.
+            self.look_at_screen(key, host, allowed_domain, url, title, cfg, limited)
+            return False
         now = time.time()
         # The wait is per site, not per page, so fast scrolling (Shorts, Reels)
         # can't dodge the check by changing page every few seconds.
@@ -216,6 +237,24 @@ class Daemon:
                                                "title": title},
                                               fut)
         return False
+
+    def look_at_screen(self, key, host, domain, url, title, cfg, limited):
+        if not cfg.get("screen_checks", True) or ai.chat_active.is_set():
+            return
+        if any(k == "screen" for k, _, _ in self.pending.values()):
+            return   # one screenshot at a time
+        if time.time() - self.screen_seen.get(key, 0) < self.screen_every:
+            return
+        shot = self.obs.get("screen")
+        if not shot:
+            self.want_screen = True   # the helper sends one with its next report
+            return
+        self.screen_seen[key] = time.time()
+        if len(self.screen_seen) > 500:
+            self.screen_seen = {key: time.time()}
+        fut = self.pool.submit(ai.check_screen, shot, url, title, domain if limited else "")
+        self.pending[("screen", key)] = ("screen", {"domain": domain, "key": key, "host": host,
+                                                    "title": title}, fut)
 
     def no_permission(self, app: str):
         update_state(lambda s: s["no_permission"].__setitem__(app, time.time()))
@@ -281,13 +320,19 @@ class Daemon:
                 log("AI check crashed:\n" + traceback.format_exc())
                 continue
 
-            if kind == "distraction":
+            if kind in ("distraction", "screen"):
                 if len(self.distraction_cache) > 500:
                     self.distraction_cache.clear()
+                if kind == "screen" and not result["distracting"]:
+                    continue   # keep the title verdict; look again later
                 self.distraction_cache[info["key"]] = result["distracting"]
                 if result["distracting"]:
+                    if kind == "screen":
+                        result["reason"] = f'On screen: {result["topic"]}. {result["reason"]}' 
                     reason = f'{result["reason"]} (page: "{info["title"][:80]}")'
-                    domain, now = info["domain"], time.time()
+                    # Strikes and hour-long blocks hit only the exact site, so a game on
+                    # one *.vercel.app site doesn't block his homework sites there.
+                    domain, now = info["host"], time.time()
                     self.strikes[domain] = [t for t in self.strikes[domain]
                                             if now - t < STRIKE_WINDOW] + [now]
                     if len(self.strikes[domain]) >= 2:

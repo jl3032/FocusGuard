@@ -59,6 +59,7 @@ DEFAULT_CONFIG = {
     # Size of the free local model: "auto" picks one that fits this Mac's chip and memory;
     # or "small" / "medium" / "large" (see ai.MODEL_SIZES).
     "ai_model_size": "auto",
+    "screen_checks": True,          # the AI also looks at screenshots of work/limited sites
     "ollama_model": "qwen2.5:7b",   # only used if ai_model_size isn't one of the above
     "ollama_url": "http://localhost:11434",
     "claude_model": "claude-opus-5-5",

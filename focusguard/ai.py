@@ -28,12 +28,13 @@ class AIError(Exception):
 chat_active = threading.Event()
 
 
-def _json_call(system: str, messages: list, schema: dict,
-               effort: str = "low", max_tokens: int = 6000, timeout: float = 120) -> dict:
+def _json_call(system: str, messages: list, schema: dict, effort: str = "low",
+               max_tokens: int = 6000, timeout: float = 120, kind: str = "model") -> dict:
+    """kind="vision": the messages carry screenshots ("images": [base64 JPEG])."""
     cfg = load_config()
     if cfg.get("provider", "ollama") == "anthropic":
         return _claude_call(cfg, system, messages, schema, effort, max_tokens)
-    return _ollama_call(cfg, system, messages, schema, timeout)
+    return _ollama_call(cfg, system, messages, schema, timeout, kind)
 
 
 # ------------------------------------------------------------- Ollama (free, local)
@@ -41,11 +42,19 @@ _pull_started = set()
 
 # Free local models, from fastest to most accurate. Bigger is smarter but needs more memory,
 # and on Intel Macs (no fast AI chip) everything runs several times slower.
+# "model" judges text (page titles, chat); "vision" looks at screenshots. Where memory is
+# tight one vision model does both, so only one model has to fit in memory.
 MODEL_SIZES = {
-    "small": {"model": "qwen2.5:3b", "gb": 1.9, "label": "Small: fastest, least accurate"},
-    "medium": {"model": "qwen2.5:7b", "gb": 4.7, "label": "Medium: good balance"},
-    "large": {"model": "qwen2.5:14b", "gb": 9.0, "label": "Large: most accurate, needs 24 GB+"},
+    "small": {"model": "qwen2.5vl:3b", "vision": "qwen2.5vl:3b", "gb": 3.2,
+              "label": "Small: fastest, least accurate"},
+    "medium": {"model": "qwen2.5vl:7b", "vision": "qwen2.5vl:7b", "gb": 6,
+               "label": "Medium: good balance"},
+    "large": {"model": "qwen2.5:14b", "vision": "qwen2.5vl:7b", "gb": 15,
+              "label": "Large: most accurate, needs 24 GB+"},
 }
+# Models that can stand in while the chosen one downloads (least to most capable).
+TEXT_LADDER = ["qwen2.5:3b", "qwen2.5vl:3b", "qwen2.5:7b", "qwen2.5vl:7b", "qwen2.5:14b"]
+VISION_LADDER = ["qwen2.5vl:3b", "qwen2.5vl:7b"]
 
 
 def auto_size(hw: dict) -> str:
@@ -59,12 +68,19 @@ def auto_size(hw: dict) -> str:
     return "small"                # 8 GB: a bigger model would make the Mac crawl
 
 
-def wanted_model(cfg: dict) -> str:
+def chosen_size(cfg: dict) -> str:
     size = cfg.get("ai_model_size", "auto")
     if size == "auto":
         from .macos import hardware
         size = auto_size(hardware())
-    return MODEL_SIZES[size]["model"] if size in MODEL_SIZES else cfg["ollama_model"]
+    return size
+
+
+def wanted_model(cfg: dict, kind: str = "model") -> str:
+    size = chosen_size(cfg)
+    if size in MODEL_SIZES:
+        return MODEL_SIZES[size][kind]
+    return cfg["ollama_model"] if kind == "model" else MODEL_SIZES["small"]["vision"]
 
 
 _installed = (0.0, [])   # (checked_at, model names)
@@ -78,28 +94,26 @@ def _installed_models(base: str) -> list:
                 names = [m.get("name", "") for m in json.loads(r.read()).get("models", [])]
         except (OSError, ValueError):
             return _installed[1]
-        _installed = (time.time(), names)
+        _installed = (time.time(), [n[:-7] if n.endswith(":latest") else n for n in names])
     return _installed[1]
 
 
-def _model_to_use(base: str, cfg: dict) -> str:
+def _model_to_use(base: str, cfg: dict, kind: str = "model") -> str:
     """The model that fits this Mac. While it's still downloading, use the closest one
     that's already installed, so checks keep working meanwhile."""
-    want = wanted_model(cfg)
+    want = wanted_model(cfg, kind)
     have = _installed_models(base)
-    if want in have or (want + ":latest") in have:
+    if want in have:
         return want
     _start_model_download(base, want)
-    ladder = [v["model"] for v in MODEL_SIZES.values()]
+    ladder = VISION_LADDER if kind == "vision" else TEXT_LADDER
     if want in ladder:
         i = ladder.index(want)
         ladder = sorted(ladder, key=lambda m: (abs(ladder.index(m) - i), ladder.index(m)))
     fallback = next((m for m in ladder if m in have), None)
     if fallback:
         return fallback
-    gb = next((v["gb"] for v in MODEL_SIZES.values() if v["model"] == want), None)
-    raise AIError(f"Downloading the free AI model ({want}"
-                  + (f", about {gb:g} GB" if gb else "") + ") now. Try again in a few minutes.")
+    raise AIError(f"Downloading the free AI model ({want}) now. Try again in a few minutes.")
 
 
 def _ollama_up(base: str) -> bool:
@@ -143,6 +157,12 @@ def _start_model_download(base: str, model: str) -> None:
         try:
             with urllib.request.urlopen(req, timeout=3600) as r:
                 r.read()
+            log(f"downloaded AI model {model}")
+        except urllib.error.HTTPError as e:
+            # e.g. the screenshot models need a recent Ollama (0.7 or newer)
+            log(f"couldn't download AI model {model}: {e.read().decode(errors='replace')[:200]} "
+                "(updating the Ollama app may fix this)")
+            _pull_started.discard(model)
         except (urllib.error.URLError, TimeoutError, ConnectionError, OSError):
             _pull_started.discard(model)   # allow a retry later
     threading.Thread(target=pull, daemon=True).start()
@@ -164,14 +184,17 @@ def warm_up() -> None:
             data=json.dumps({"model": _model_to_use(base, cfg), "keep_alive": KEEP_LOADED}).encode())
         with urllib.request.urlopen(req, timeout=120) as r:
             r.read()
+        if wanted_model(cfg, "vision") != wanted_model(cfg):
+            _model_to_use(base, cfg, "vision")   # starts its download if needed
     except (AIError, OSError):
         pass
 
 
-def _ollama_call(cfg: dict, system: str, messages: list, schema: dict, timeout: float) -> dict:
+def _ollama_call(cfg: dict, system: str, messages: list, schema: dict, timeout: float,
+                 kind: str = "model") -> dict:
     base = cfg["ollama_url"].rstrip("/")
     _ensure_ollama_running(base, cfg)
-    model = _model_to_use(base, cfg)
+    model = _model_to_use(base, cfg, kind)
     body = json.dumps({
         "model": model,
         "messages": [{"role": "system", "content": system}] + messages,
@@ -220,6 +243,11 @@ def _claude_call(cfg: dict, system: str, messages: list, schema: dict,
         raise AIError("Claude support isn't installed. Re-run Install FocusGuard.command") from e
     key = get_api_key()
     client = anthropic.Anthropic(api_key=key) if key else anthropic.Anthropic()
+    messages = [m if not m.get("images") else {
+        "role": m["role"],
+        "content": [{"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
+                                                 "data": img}} for img in m["images"]]
+                   + [{"type": "text", "text": m["content"]}]} for m in messages]
     try:
         resp = client.beta.messages.create(
             model=cfg["claude_model"],
@@ -484,3 +512,68 @@ def check_distraction(url: str, title: str, allowed_sites: list, limited_site: s
         return second
     log(f"judged distracting: {title[:80]!r} ({second['topic']})")
     return second
+
+
+# ------------------------------------------------------------- screen check
+SCREEN_SYSTEM = """You help FocusGuard, a focus tool the user installed on their own Mac. \
+You see a screenshot of the user's screen. The browser is on {site}, which they are \
+{why}. Judge what is actually on the screen (the browser's content, not other windows or \
+the Dock): a page title can say "Math Practice" while the screen shows a game.
+
+First write "topic": what you see on the screen, in a few words (e.g. "a car racing game", \
+"a Google Doc essay", "a video lecture on cells"). Then pick "category": learning, work, tool, \
+navigation (home page, search results, a list of links or videos to pick from), unclear, or \
+entertainment.
+{extra}
+""" + LEARNING + """
+
+A game is entertainment even on a school-looking site, unless it is clearly an educational \
+exercise (e.g. a maths drill or typing practice). "reason" is one short sentence addressed \
+to the user."""
+
+SCREEN_VERIFY = """You double-check FocusGuard, a focus tool the user installed on their own \
+Mac. A first check looked at this screenshot and said it shows entertainment, which blocks the \
+page. Look again carefully. Keep "entertainment" only if the screen clearly shows content just \
+for fun (a game being played, a gaming or prank video, memes, a social feed). Pick another \
+category if it shows schoolwork, documents, reading, a lesson or lecture, an educational \
+exercise, a list of results to pick from ("navigation"), or you can't tell ("unclear").
+{extra}
+""" + LEARNING + """
+
+First write "topic": what you see, then "category", then "reason": one short sentence."""
+
+SCREEN_LIMITED = ("{site} may be built for one activity: using it for that activity "
+                  "(e.g. playing chess on chess.com) is \"tool\", not entertainment.\n")
+
+
+def check_screen(image_b64: str, url: str, title: str, limited_site: str = "") -> dict:
+    """Judge a screenshot of the current page. Same answer shape as check_distraction."""
+    site = limited_site or (host_of_url(url) or "this site")
+    extra = SCREEN_LIMITED.format(site=site) if limited_site else ""
+    why = ("allowed to use for a few minutes a day" if limited_site
+           else "allowed to use for work and school")
+    msg = f"Page address: {url}\nPage title: {title}"
+
+    def look(system, text):
+        r = _json_call(system, [{"role": "user", "content": text, "images": [image_b64]}],
+                       DISTRACTION_SCHEMA, max_tokens=3000, timeout=150, kind="vision")
+        cat = r.get("category", "unclear")
+        return {"distracting": cat == "entertainment", "category": cat,
+                "topic": str(r.get("topic", "")), "reason": str(r.get("reason", ""))}
+
+    first = look(SCREEN_SYSTEM.format(site=site, why=why, extra=extra), msg)
+    if not first["distracting"]:
+        return first
+    second = look(SCREEN_VERIFY.format(extra=extra),
+                  msg + f"\nFirst check saw: {first['topic']} — {first['reason']}")
+    if not second["distracting"]:
+        log(f"second screen check overruled a flag on {title[:80]!r} "
+            f"({second['category']}: {second['topic']}); first saw: {first['topic']}")
+        return second
+    log(f"screen judged distracting: {title[:80]!r} ({second['topic']})")
+    return second
+
+
+def host_of_url(url: str) -> str:
+    from .common import host_of
+    return host_of(url) or ""

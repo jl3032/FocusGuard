@@ -78,7 +78,9 @@ class Onboarding(ttk.Frame):
         self.hw = hardware()
         self.size_names = {"auto": f"Automatic for this Mac: {MODEL_SIZES[auto_size(self.hw)]['label'].split(':')[0]} "
                                    f"({self.hw['chip']}, {self.hw['memory_gb']} GB) - recommended",
-                           **{k: f"{v['label']} ({v['model']}, {v['gb']:g} GB download)"
+                           **{k: f"{v['label']} ({v['model']}"
+                                 + (f" + {v['vision']}" if v['vision'] != v['model'] else "")
+                                 + f", {v['gb']:g} GB download)"
                               for k, v in MODEL_SIZES.items()}}
         size = self.cfg.get("ai_model_size", "auto")
         self.size_var = tk.StringVar(value=self.size_names.get(size, self.size_names["auto"]))
