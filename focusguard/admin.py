@@ -55,6 +55,8 @@ def clean_config(data: dict, cfg: dict) -> dict:
                 cfg[key] = max(lo, min(hi, int(data[key])))
             except (TypeError, ValueError):
                 pass
+    if data.get("ai_model_size") in ("auto", "small", "medium", "large"):
+        cfg["ai_model_size"] = data["ai_model_size"]
     if data.get("provider") in ("ollama", "anthropic"):
         cfg["provider"] = data["provider"]
     for key in ("ollama_model", "claude_model"):

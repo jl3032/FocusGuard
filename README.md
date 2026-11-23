@@ -55,7 +55,7 @@ You need an **administrator's name and password** once during install.
    ```
    (Double-clicking `Install FocusGuard.command` also works, but macOS often refuses to open downloaded `.command` files; the Terminal command avoids that.)
 4. **When the password window appears**, an administrator types their name and password.
-5. **Wait for it to finish.** It sets up the free AI too (about a 4.7 GB download the first time), then opens FocusGuard. Pick the apps and sites, then an administrator approves the settings with their password.
+5. **Wait for it to finish.** It sets up the free AI too, picking a model size that fits the Mac (see below), then opens FocusGuard. Pick the apps and sites, then an administrator approves the settings with their password.
 6. When macOS asks to let python control Safari/Chrome or System Events, click **Allow**.
 
 **Updates install themselves.** About 2 minutes after the Mac starts, and then every 6 hours, FocusGuard checks this GitHub repo for a new version. It downloads it, makes sure it loads, swaps it in and restarts in the background; settings are kept. If a new version can't start, it switches back to the previous one. The **Check for updates** button in the app does it right away. (Only changes to the installer itself need a reinstall.)
@@ -83,7 +83,7 @@ Permissions macOS will ask for:
 ## Settings
 
 Change them in the app (administrator password needed). They're stored in `/Library/Application Support/FocusGuard/config.json`:
-`allowed_apps` / `allowed_sites` (work), `limited_apps` / `limited_sites` (`[{"target": "chess.com", "minutes": 10}]`), `max_grant_minutes` (90), `distraction_penalty_minutes` (60), `on_task_check_seconds` (60), `provider` (`ollama` or `anthropic`), `ollama_model` (`qwen2.5:7b`), `claude_model` (`claude-opus-5-5`). The log is `activity.log` in the same folder.
+`allowed_apps` / `allowed_sites` (work), `limited_apps` / `limited_sites` (`[{"target": "chess.com", "minutes": 10}]`), `max_grant_minutes` (90), `distraction_penalty_minutes` (60), `on_task_check_seconds` (60), `provider` (`ollama` or `anthropic`), `ai_model_size` (`auto`, `small`, `medium` or `large`), `claude_model` (`claude-opus-5-5`). The log is `activity.log` in the same folder.
 
 ## Files
 
@@ -101,3 +101,16 @@ Change them in the app (administrator password needed). They're stored in `/Libr
 ## Limits
 
 Anyone with the administrator password can turn it off. Without it, a determined user could still boot the Mac from another disk or recovery mode, or use a different device.
+
+## Which free AI model it uses
+
+Bigger models judge pages and requests more accurately but need more memory and are slower. With **Automatic** (the default), FocusGuard picks one from the Mac's chip and memory:
+
+| Mac | Model | Download |
+|---|---|---|
+| Apple Silicon (M1–M4), 24 GB memory or more | Large: `qwen2.5:14b` | about 9 GB |
+| Apple Silicon, 16 GB | Medium: `qwen2.5:7b` | about 4.7 GB |
+| Apple Silicon, 8 GB | Small: `qwen2.5:3b` | about 1.9 GB |
+| Intel Mac (any memory) | Small: `qwen2.5:3b` | about 1.9 GB |
+
+You can pick a different size in Setup (needs the administrator password). A new model downloads in the background, and the model already on the Mac is used until it's ready. On Intel Macs the free AI is slow and makes more mistakes; the Claude API option works much better there.

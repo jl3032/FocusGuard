@@ -68,8 +68,20 @@ if [[ -n "$OLLAMA" && -x "$OLLAMA" ]] && ! "$OLLAMA" list >/dev/null 2>&1; then
   fi
   for i in {1..30}; do "$OLLAMA" list >/dev/null 2>&1 && break; sleep 1; done
 fi
+# Pick the model that fits this Mac's chip and memory (same rule FocusGuard uses).
+PICK="$("$PY" -I -c 'import sys; sys.path.insert(0, sys.argv[1])
+from focusguard.ai import MODEL_SIZES, auto_size
+from focusguard.macos import hardware
+hw = hardware(); m = MODEL_SIZES[auto_size(hw)]
+print(m["model"], m["gb"], hw["chip"].replace(" ", "_"), hw["memory_gb"])' "$SRC" 2>/dev/null || true)"
+if [[ -n "$PICK" ]]; then
+  read -r MODEL MODEL_GB CHIP MEM <<< "$PICK"
+  echo "This Mac: ${CHIP//_/ }, $MEM GB memory, so using $MODEL."
+else
+  MODEL_GB="4.7"
+fi
 if [[ -n "$OLLAMA" && -x "$OLLAMA" ]]; then
-  echo "Downloading the AI model $MODEL (about 4.7 GB, only the first time)…"
+  echo "Downloading the AI model $MODEL (about $MODEL_GB GB, only the first time)…"
   "$OLLAMA" pull "$MODEL" || echo "Couldn't download it now; FocusGuard will retry by itself."
 fi
 

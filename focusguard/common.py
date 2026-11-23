@@ -56,7 +56,10 @@ DEFAULT_CONFIG = {
     "on_task_check_seconds": 60,  # how often unlocked items are re-checked
     # AI provider: "ollama" (free, runs locally, no key) or "anthropic" (Claude API key)
     "provider": "ollama",
-    "ollama_model": "qwen2.5:7b",
+    # Size of the free local model: "auto" picks one that fits this Mac's chip and memory;
+    # or "small" / "medium" / "large" (see ai.MODEL_SIZES).
+    "ai_model_size": "auto",
+    "ollama_model": "qwen2.5:7b",   # only used if ai_model_size isn't one of the above
     "ollama_url": "http://localhost:11434",
     "claude_model": "claude-opus-5-5",
 }

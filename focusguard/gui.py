@@ -12,7 +12,8 @@ from tkinter import messagebox, simpledialog, ttk
 
 from .common import (HOSTING_PLATFORMS, ServiceError, api_key_saved, limited_items,
                      load_config, load_state, normalize_domain, paused, request, seconds_left)
-from .macos import BROWSERS, UNMONITORABLE_BROWSERS, installed_apps, run_admin
+from .ai import MODEL_SIZES, auto_size
+from .macos import BROWSERS, UNMONITORABLE_BROWSERS, hardware, installed_apps, run_admin
 
 COMMON_SITES = [
     "google.com", "docs.google.com", "drive.google.com", "mail.google.com",
@@ -74,6 +75,13 @@ class Onboarding(ttk.Frame):
         self.key_var = tk.StringVar()
         self.app_info = installed_apps()     # name -> {"path", "bundle_id"}
         self.provider_var = tk.StringVar(value=self.cfg.get("provider", "ollama"))
+        self.hw = hardware()
+        self.size_names = {"auto": f"Automatic for this Mac: {MODEL_SIZES[auto_size(self.hw)]['label'].split(':')[0]} "
+                                   f"({self.hw['chip']}, {self.hw['memory_gb']} GB) - recommended",
+                           **{k: f"{v['label']} ({v['model']}, {v['gb']:g} GB download)"
+                              for k, v in MODEL_SIZES.items()}}
+        size = self.cfg.get("ai_model_size", "auto")
+        self.size_var = tk.StringVar(value=self.size_names.get(size, self.size_names["auto"]))
         self.limited_apps = [dict(x) for x in self.cfg["limited_apps"]]
         self.limited_sites = [dict(x) for x in self.cfg["limited_sites"]]
         self.penalty_var = tk.IntVar(value=self.cfg["distraction_penalty_minutes"])
@@ -115,9 +123,14 @@ class Onboarding(ttk.Frame):
         ttk.Radiobutton(self.body, variable=self.provider_var, value="ollama",
                         text="Free: local AI on this Mac via Ollama (no key, nothing leaves your Mac)"
                         ).pack(anchor="w", pady=2)
-        ttk.Label(self.body, text="Needs the Ollama app running (ollama.com) and the model "
-                  f"downloaded: ollama pull {self.cfg['ollama_model']}",
-                  foreground="#555").pack(anchor="w", padx=24)
+        ttk.Label(self.body, text="Model size (bigger is smarter but slower; it downloads "
+                  "by itself and the old one is used meanwhile):").pack(anchor="w", padx=24)
+        ttk.Combobox(self.body, textvariable=self.size_var, state="readonly", width=70,
+                     values=list(self.size_names.values())).pack(anchor="w", padx=24)
+        if not self.hw["apple_silicon"]:
+            ttk.Label(self.body, text="This is an Intel Mac, where the free AI is slow and "
+                      "makes more mistakes. The Claude API below works much better here.",
+                      foreground="#a60").pack(anchor="w", padx=24, pady=(2, 0))
         ttk.Radiobutton(self.body, variable=self.provider_var, value="anthropic",
                         text="Claude API (paid, smarter; needs a key from console.anthropic.com)"
                         ).pack(anchor="w", pady=(10, 2))
@@ -309,6 +322,8 @@ class Onboarding(ttk.Frame):
             "limited_apps": lim_apps, "limited_sites": lim_sites,
             "distraction_penalty_minutes": int(self.penalty_var.get()),
             "provider": self.cfg["provider"],
+            "ai_model_size": next((k for k, v in self.size_names.items()
+                                   if v == self.size_var.get()), "auto"),
             "app_ids": {n.lower(): info for n, info in self.app_info.items() if n.lower() in picked},
         }
         if self.key_var.get().strip():

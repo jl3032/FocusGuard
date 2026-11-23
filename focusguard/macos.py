@@ -209,6 +209,23 @@ def user_prefix(cfg: dict) -> tuple:
     return ("launchctl", "asuser", str(cfg["uid"]), "sudo", "-u", cfg["user"])
 
 
+def hardware() -> dict:
+    """{"chip": "Apple M2", "apple_silicon": True, "memory_gb": 16}"""
+    def sysctl(name):
+        try:
+            return subprocess.run(["sysctl", "-n", name], capture_output=True, text=True,
+                                  timeout=3).stdout.strip()
+        except (OSError, subprocess.TimeoutExpired):
+            return ""
+    try:
+        mem = round(int(sysctl("hw.memsize")) / 2**30)
+    except ValueError:
+        mem = 0
+    # hw.optional.arm64 is 1 on Apple Silicon even when running under Rosetta.
+    return {"chip": sysctl("machdep.cpu.brand_string") or "unknown chip",
+            "apple_silicon": sysctl("hw.optional.arm64") == "1", "memory_gb": mem}
+
+
 def kill_pid(pid: int) -> None:
     if pid > 0:
         try:

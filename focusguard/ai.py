@@ -39,6 +39,68 @@ def _json_call(system: str, messages: list, schema: dict,
 # ------------------------------------------------------------- Ollama (free, local)
 _pull_started = set()
 
+# Free local models, from fastest to most accurate. Bigger is smarter but needs more memory,
+# and on Intel Macs (no fast AI chip) everything runs several times slower.
+MODEL_SIZES = {
+    "small": {"model": "qwen2.5:3b", "gb": 1.9, "label": "Small: fastest, least accurate"},
+    "medium": {"model": "qwen2.5:7b", "gb": 4.7, "label": "Medium: good balance"},
+    "large": {"model": "qwen2.5:14b", "gb": 9.0, "label": "Large: most accurate, needs 24 GB+"},
+}
+
+
+def auto_size(hw: dict) -> str:
+    """The biggest model this Mac runs at a usable speed alongside a browser."""
+    if not hw["apple_silicon"]:
+        return "small"            # Intel: no fast AI chip, so keep it quick
+    if hw["memory_gb"] >= 24:
+        return "large"
+    if hw["memory_gb"] >= 16:
+        return "medium"
+    return "small"                # 8 GB: a bigger model would make the Mac crawl
+
+
+def wanted_model(cfg: dict) -> str:
+    size = cfg.get("ai_model_size", "auto")
+    if size == "auto":
+        from .macos import hardware
+        size = auto_size(hardware())
+    return MODEL_SIZES[size]["model"] if size in MODEL_SIZES else cfg["ollama_model"]
+
+
+_installed = (0.0, [])   # (checked_at, model names)
+
+
+def _installed_models(base: str) -> list:
+    global _installed
+    if time.time() - _installed[0] > 60:
+        try:
+            with urllib.request.urlopen(base + "/api/tags", timeout=5) as r:
+                names = [m.get("name", "") for m in json.loads(r.read()).get("models", [])]
+        except (OSError, ValueError):
+            return _installed[1]
+        _installed = (time.time(), names)
+    return _installed[1]
+
+
+def _model_to_use(base: str, cfg: dict) -> str:
+    """The model that fits this Mac. While it's still downloading, use the closest one
+    that's already installed, so checks keep working meanwhile."""
+    want = wanted_model(cfg)
+    have = _installed_models(base)
+    if want in have or (want + ":latest") in have:
+        return want
+    _start_model_download(base, want)
+    ladder = [v["model"] for v in MODEL_SIZES.values()]
+    if want in ladder:
+        i = ladder.index(want)
+        ladder = sorted(ladder, key=lambda m: (abs(ladder.index(m) - i), ladder.index(m)))
+    fallback = next((m for m in ladder if m in have), None)
+    if fallback:
+        return fallback
+    gb = next((v["gb"] for v in MODEL_SIZES.values() if v["model"] == want), None)
+    raise AIError(f"Downloading the free AI model ({want}"
+                  + (f", about {gb:g} GB" if gb else "") + ") now. Try again in a few minutes.")
+
 
 def _ollama_up(base: str) -> bool:
     try:
@@ -99,7 +161,7 @@ def warm_up() -> None:
         _ensure_ollama_running(base, cfg)
         req = urllib.request.Request(
             base + "/api/generate", headers={"Content-Type": "application/json"},
-            data=json.dumps({"model": cfg["ollama_model"], "keep_alive": KEEP_LOADED}).encode())
+            data=json.dumps({"model": _model_to_use(base, cfg), "keep_alive": KEEP_LOADED}).encode())
         with urllib.request.urlopen(req, timeout=120) as r:
             r.read()
     except (AIError, OSError):
@@ -107,9 +169,9 @@ def warm_up() -> None:
 
 
 def _ollama_call(cfg: dict, system: str, messages: list, schema: dict, timeout: float) -> dict:
-    model = cfg["ollama_model"]
     base = cfg["ollama_url"].rstrip("/")
     _ensure_ollama_running(base, cfg)
+    model = _model_to_use(base, cfg)
     body = json.dumps({
         "model": model,
         "messages": [{"role": "system", "content": system}] + messages,
@@ -128,8 +190,10 @@ def _ollama_call(cfg: dict, system: str, messages: list, schema: dict, timeout: 
     except urllib.error.HTTPError as e:
         detail = e.read().decode(errors="replace")
         if e.code == 404 or "not found" in detail:
+            global _installed
+            _installed = (0.0, [])
             _start_model_download(base, model)
-            raise AIError(f"Downloading the free AI model ({model}, about 4.7 GB) now. "
+            raise AIError(f"Downloading the free AI model ({model}) now. "
                           "Try again in a few minutes.") from e
         raise AIError(f"Ollama error {e.code}: {detail[:200]}") from e
     except OSError as e:   # includes timeouts (socket.timeout on older Pythons)
@@ -318,18 +382,25 @@ DISTRACTION_SCHEMA = {
     "additionalProperties": False,
 }
 
-LEARNING = """Count as "learning" (never distracting), even when it's fun to watch:
+LEARNING = """This applies to every kind of site: videos, articles, forums, social media, \
+wikis, news, blogs and anything else. Judge the page's content, not the site.
+
+Count as "learning" (never distracting), even when it's fun:
 - science, maths, history, geography, economics, philosophy, psychology, health, nature, space;
-- explainers and "how/why X works" videos, documentaries, video essays, book or film analysis;
+- explainers and "how/why X works" videos or articles, documentaries, video essays, book or \
+film analysis, encyclopedia and wiki articles, forum threads answering a real question, \
+documentation, online courses, practice exercises and quizzes for school subjects;
 - lectures, courses, lessons, tutorials and how-tos (coding, languages, music, art, cooking, \
 sport technique, school subjects, exam prep);
 - talks and interviews with experts (TED, TEDx, podcasts about ideas), news and current affairs;
 - educational channels such as Kurzgesagt, Veritasium, 3Blue1Brown, Crash Course, Khan Academy, \
 SciShow, Vsauce, Mark Rober, TED-Ed, Numberphile, Computerphile, Smarter Every Day, \
 Real Engineering, Wendover, Tom Scott, Physics Girl, MinutePhysics, Fireship, freeCodeCamp.
-"entertainment" means content watched only for fun: gaming videos and let's-plays, streams, \
-pranks, challenges, reaction videos, memes, funny compilations, vlogs, celebrity or influencer \
-drama, sports highlights, music videos, TV show clips, and Shorts or Reels scrolled for fun.
+"entertainment" means content only for fun: games and browser games, gaming videos, news and \
+let's-plays, streams, pranks, challenges, reaction videos, memes, funny posts and compilations, \
+vlogs, celebrity or influencer drama, sports highlights and gossip, music videos, TV shows and \
+films, fan sites, social feeds or Shorts/Reels scrolled for fun, shopping for fun, quizzes \
+like "which character are you".
 When a title could be either, or you can't tell, answer "unclear" (that is not blocked)."""
 
 DISTRACTION_SYSTEM = """You help FocusGuard, a focus tool the user installed on their own Mac. \
