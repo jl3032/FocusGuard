@@ -24,6 +24,7 @@ SETTLE_CHECKS = 2      # see the same address + title this many checks in a row 
                        # (YouTube changes the address before the title catches up)
 STRIKE_WINDOW = 30 * 60   # a 2nd distracting page on a site within this long blocks the whole site
 NOTIFY_COOLDOWN = 20
+BLOCK_NOW_SECONDS = 120   # a verdict still blocks the user's current tab on that site this long
 MAX_TICK_CREDIT = 5    # seconds counted per tick at most (ignores sleep/wake gaps)
 WARN_AT = (300, 60)    # warn when this many seconds of a daily allowance are left
 PYTHON_NAMES = {"Python", "python3", "python", "Python Launcher"}
@@ -42,6 +43,7 @@ class Daemon:
         self.host_since = 0.0
         self.page = ("", "", 0)             # (url, title, checks seen in a row)
         self.strikes = defaultdict(list)    # site -> times a page on it was judged distracting
+        self.block_now = {}                 # host -> (reason, ts): block the current tab there
         self.samples = defaultdict(lambda: deque(maxlen=12))  # grant id -> activity
         self.last_check = {}                # grant id -> ts
         self.last_notify = {}
@@ -176,6 +178,13 @@ class Daemon:
         """Have the AI judge every page on a work or limited site. A distracting page is
         blocked; a second one on the same site soon after blocks the whole site.
         On limited sites the AI judges by what the site is for. Returns True if blocked."""
+        # A verdict for a page the user has already scrolled past (Shorts, Reels, TikTok
+        # change page every few seconds): block whatever they're on now on that site.
+        hit = self.block_now.pop(host, None)
+        if hit and time.time() - hit[1] < BLOCK_NOW_SECONDS:
+            self.block_site(app, host, f"This looks distracting: {hit[0]} Another distracting "
+                                       "page here will block the whole site for a while.")
+            return True
         if is_navigation_page(url):
             return False   # home and search pages: judge what the user opens from them
         key = (url[:400], title[:200])
@@ -284,6 +293,7 @@ class Daemon:
                         self.strikes.pop(domain)
                         self.add_penalty(domain, reason, cfg)
                     else:
+                        self.block_now[info["host"]] = (reason, now)
                         self.notify("FocusGuard — warning", f"Blocked one page: {reason} "
                                     f"Another distracting page will block {domain} for a while.")
                         log(f"warning on {domain}: {reason}")
