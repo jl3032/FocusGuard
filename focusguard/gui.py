@@ -338,6 +338,8 @@ class Main(ttk.Frame):
         self.busy = False
         self.service_ok = True
         self.version = ""
+        # Load the AI model now, so the first chat message doesn't wait for it.
+        threading.Thread(target=warm_ai, daemon=True).start()
 
         top = ttk.Frame(self)
         top.pack(fill="x")
@@ -516,6 +518,10 @@ class Main(ttk.Frame):
         self.busy = True
         self.send_btn.state(["disabled"])
         self.say("sys", "Thinking…")
+        sent = self.chat_count = getattr(self, "chat_count", 0) + 1
+        self.after(20000, lambda: self.busy and self.chat_count == sent and self.say(
+            "sys", "Still thinking. The free AI can be slow when it's just starting up; "
+                   "it gives up after about 90 seconds."))
 
         def work():
             try:
@@ -536,6 +542,13 @@ class Main(ttk.Frame):
         self.say("ai", r["reply"])
         if r.get("note"):
             self.say("sys", r["note"])
+
+
+def warm_ai():
+    try:
+        request("warm")
+    except ServiceError:
+        pass
 
 
 # ====================================================================== app shell

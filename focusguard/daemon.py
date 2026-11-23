@@ -195,6 +195,8 @@ class Daemon:
         self.page = (url, title, seen)
         if now - self.host_since < DWELL_SECONDS or seen < SETTLE_CHECKS:
             return False   # also wait until the title matches the page
+        if ai.chat_active.is_set():
+            return False   # the user is waiting for the chat; check this page afterwards
         if any(k == "distraction" and i["host"] == host for k, i, _ in self.pending.values()):
             return False   # one check per site at a time; the next page is judged when it's done
         fut = self.pool.submit(ai.check_distraction, url, title, cfg["allowed_sites"],
@@ -249,7 +251,8 @@ class Daemon:
         if not dq or dq[-1] != activity:
             dq.append(activity)
         last = self.last_check.get(gid, grant["granted_at"])
-        if time.time() - last < cfg["on_task_check_seconds"] or gid in self.pending:
+        if (time.time() - last < cfg["on_task_check_seconds"] or gid in self.pending
+                or ai.chat_active.is_set()):
             return
         self.last_check[gid] = time.time()
         fut = self.pool.submit(ai.check_on_task, grant, list(dq))

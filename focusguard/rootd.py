@@ -23,7 +23,7 @@ from dataclasses import asdict
 from . import ai, updater
 from .common import (AGENT_LABEL, AGENT_PLIST, GUI_SCRIPT, SOCKET_PATH, find_item,
                      limited_items, load_config, load_state, log, new_id, normalize_domain,
-                     seconds_left, update_state)
+                     seconds_left, site_covers, update_state)
 from .daemon import Daemon
 from .macos import frontmost_app, kill_pid, notify, user_prefix
 
@@ -144,6 +144,9 @@ class RootService:
             update_state(lambda s: s.update(paused_until=0))
             log("pause ended early by user")
             return {"ok": True}
+        if op == "warm":
+            threading.Thread(target=ai.warm_up, daemon=True).start()
+            return {"ok": True}
         if op == "ping":
             return {"ok": True, **updater.status()}
         if op == "update":
@@ -180,6 +183,7 @@ class RootService:
             self.chat = self.chat[-20:]
             while self.chat and self.chat[0]["role"] != "user":
                 self.chat = self.chat[1:]
+            ai.chat_active.set()
             try:
                 r = ai.gatekeeper(list(self.chat), self.context())
             except ai.AIError as e:
@@ -189,6 +193,8 @@ class RootService:
                 self.chat.pop()
                 log("chat crashed:\n" + traceback.format_exc())
                 return {"error": f"Unexpected error: {e}"}
+            finally:
+                ai.chat_active.clear()
             self.chat.append({"role": "assistant", "content": r["reply"]})
         return {"reply": r["reply"], "note": self.apply_grant(r)}
 
@@ -203,13 +209,14 @@ class RootService:
 
         def grant(s):
             s["grants"] = [g for g in s["grants"] if not (g["kind"] == kind and g["target"] == target)]
+            if kind == "site":   # an appeal: the AI agreed the distraction block was wrong
+                s["penalties"] = [p for p in s["penalties"]
+                                  if not (find_item([p], "site", target) or site_covers(p["target"], target))]
             s["grants"].append({"id": new_id(), "kind": kind, "target": target,
                                 "purpose": r["purpose"], "granted_at": time.time(),
                                 "expires_at": time.time() + minutes * 60})
-        st = update_state(grant)
+        update_state(grant)
         log(f"granted {kind} {target} for {minutes}m: {r['purpose']}")
-        if kind == "site" and find_item(st["penalties"], "site", target):
-            return f"Note: {target} is still under a distraction block until it expires."
         return f"Unlocked {target} for {minutes} min. Activity on it is being monitored."
 
     # ------------------------------------------------------------ watchdog
