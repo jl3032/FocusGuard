@@ -28,9 +28,13 @@ KEYCHAIN_SERVICE = "FocusGuard-Anthropic"
 
 DEFAULT_CONFIG = {
     "onboarded": False,
+    # Work items: always allowed.
     "allowed_apps": [],          # app display names, e.g. "Safari", "Notion"
     "allowed_sites": [],         # bare domains, e.g. "github.com"
-    "default_session_minutes": 120,
+    # Limited items: allowed for a few minutes a day, then blocked until midnight.
+    "limited_apps": [],          # [{"target": "Steam", "minutes": 15}]
+    "limited_sites": [],         # [{"target": "chess.com", "minutes": 10}]
+    # Everything else is always blocked unless the AI unlocks it.
     "distraction_penalty_minutes": 60,
     "max_grant_minutes": 90,
     "on_task_check_seconds": 60,  # how often unlocked items are re-checked
@@ -42,10 +46,10 @@ DEFAULT_CONFIG = {
 }
 
 DEFAULT_STATE = {
-    "session": None,      # {"started_at": ts, "ends_at": ts}
     "grants": [],         # temporary AI unlocks
     "penalties": [],      # 1-hour distraction blocks
     "recent_blocks": [],  # what was blocked lately (gives the AI context)
+    "usage": {"day": "", "seconds": {}},  # time spent today on limited items
 }
 
 
@@ -81,6 +85,9 @@ def _prune(st: dict) -> dict:
     st["grants"] = [g for g in st["grants"] if g["expires_at"] > now]
     st["penalties"] = [p for p in st["penalties"] if p["until"] > now]
     st["recent_blocks"] = st["recent_blocks"][-15:]
+    st.pop("session", None)   # left over from the old focus-session version
+    if st["usage"].get("day") != today():
+        st["usage"] = {"day": today(), "seconds": {}}
     return st
 
 
@@ -108,9 +115,23 @@ def update_state(fn) -> dict:
         return st
 
 
-def session_active(st: dict) -> bool:
-    s = st.get("session")
-    return bool(s and s["ends_at"] > time.time())
+def today() -> str:
+    return time.strftime("%Y-%m-%d")
+
+
+def usage_key(kind: str, target: str) -> str:
+    return f"{kind}:{target.lower()}"
+
+
+def limited_items(cfg: dict) -> list:
+    """All limited items as [{"kind", "target", "minutes"}]."""
+    return ([{"kind": "app", **x} for x in cfg["limited_apps"]] +
+            [{"kind": "site", **x} for x in cfg["limited_sites"]])
+
+
+def seconds_left(item: dict, st: dict) -> float:
+    used = st["usage"]["seconds"].get(usage_key(item["kind"], item["target"]), 0)
+    return item["minutes"] * 60 - used
 
 
 def new_id() -> str:

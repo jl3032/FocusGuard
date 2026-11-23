@@ -1,4 +1,4 @@
-"""FocusGuard window: onboarding, focus sessions, and the AI unblock chat."""
+"""FocusGuard window: setup (work / limited lists), daily allowances, and the AI unblock chat."""
 from __future__ import annotations
 
 import threading
@@ -7,8 +7,8 @@ import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
 
 from . import ai
-from .common import (find_item, get_api_key, load_config, load_state, log, new_id,
-                     normalize_domain, save_config, session_active, set_api_key,
+from .common import (find_item, get_api_key, limited_items, load_config, load_state, log,
+                     new_id, normalize_domain, save_config, seconds_left, set_api_key,
                      update_state)
 from .macos import BROWSERS, UNMONITORABLE_BROWSERS, list_installed_apps
 
@@ -18,7 +18,7 @@ COMMON_SITES = [
     "claude.ai", "notion.so", "canva.com", "office.com", "outlook.com",
     "slack.com", "zoom.us", "khanacademy.org", "youtube.com", "reddit.com",
 ]
-END_EARLY_PHRASE = "I am choosing to stop focusing"
+EDIT_PHRASE = "I want to change what is blocked"
 
 
 def fmt_minutes(seconds: float) -> str:
@@ -52,7 +52,8 @@ class Onboarding(ttk.Frame):
         self.extra_apps = tk.StringVar()
         self.key_var = tk.StringVar()
         self.provider_var = tk.StringVar(value=self.cfg.get("provider", "ollama"))
-        self.minutes_var = tk.IntVar(value=self.cfg["default_session_minutes"])
+        self.limited_apps = [dict(x) for x in self.cfg["limited_apps"]]
+        self.limited_sites = [dict(x) for x in self.cfg["limited_sites"]]
         self.penalty_var = tk.IntVar(value=self.cfg["distraction_penalty_minutes"])
         self.body = ttk.Frame(self)
         self.body.pack(fill="both", expand=True)
@@ -76,14 +77,17 @@ class Onboarding(ttk.Frame):
         self.clear()
         self.back_btn.state(["disabled"] if self.step == 0 else ["!disabled"])
         self.next_btn.config(text="Finish" if self.step == 3 else "Next")
-        [self.render_key, self.render_apps, self.render_sites, self.render_session][self.step]()
+        [self.render_key, self.render_apps, self.render_sites, self.render_limited][self.step]()
 
     # step 0
     def render_key(self):
         self.heading("Welcome to FocusGuard",
-                     "During a focus session, FocusGuard blocks every app and website except the ones "
-                     "you pick next. If you need something that's blocked, ask the built-in AI. "
-                     "It only applies to this Mac user account.\n\nChoose which AI to use:")
+                     "FocusGuard is always on. You pick the apps and websites you use for work; "
+                     "those always work. Then you pick a few you're allowed for a limited time each "
+                     "day (say chess.com for 10 minutes); after that they're blocked until midnight. "
+                     "Everything else is blocked. If you need something that's blocked, tell the "
+                     "built-in AI. It only applies to this Mac user account.\n\n"
+                     "Choose which AI to use:")
         ttk.Radiobutton(self.body, variable=self.provider_var, value="ollama",
                         text="Free: local AI on this Mac via Ollama (no key, nothing leaves your Mac)"
                         ).pack(anchor="w", pady=2)
@@ -102,7 +106,8 @@ class Onboarding(ttk.Frame):
     # step 1
     def render_apps(self):
         self.heading("Which apps do you use (or might use) for work?",
-                     "Everything you leave unticked is blocked during focus sessions. Tick your "
+                     "These always work. Apps you leave unticked are blocked (you can give some a "
+                     "daily time allowance on the last step). Tick your "
                      "browser (Safari, Chrome, Arc, Brave, Edge) if you want websites at all. "
                      "Firefox and Opera can't be monitored, so they're always blocked.")
         search = tk.StringVar()
@@ -138,8 +143,9 @@ class Onboarding(ttk.Frame):
 
     # step 2
     def render_sites(self):
-        self.heading("Which websites do you use (or might use)?",
-                     "All other sites are blocked. Allowed sites are still watched: if you start "
+        self.heading("Which websites do you use for work?",
+                     "These always work; other sites are blocked (you can give some a daily time "
+                     "allowance on the next step). Allowed sites are still watched: if you start "
                      "doing something distracting on one (e.g. gaming videos on YouTube), that site "
                      "is blocked for an hour. Subdomains are included automatically.")
         grid = ttk.Frame(self.body)
@@ -158,20 +164,72 @@ class Onboarding(ttk.Frame):
         self.sites_text.pack(anchor="w", fill="x")
 
     # step 3
-    def render_session(self):
-        self.heading("Time limits",
-                     "Blocking runs for a set time each session. You can start a session any time "
-                     "from the main window.")
+    def render_limited(self):
+        self.heading("Allowed for a limited time each day",
+                     "These work until their daily time runs out, then they're blocked until "
+                     "midnight. Time only counts while the app or site is on screen. You get a "
+                     "warning 5 minutes and 1 minute before.")
+        cols = ttk.Frame(self.body)
+        cols.pack(fill="both", expand=True)
+        apps = [a for a in list_installed_apps()
+                if a not in BROWSERS and a not in UNMONITORABLE_BROWSERS]
+        self.limited_editor(cols, "Apps (e.g. Steam)", self.limited_apps, apps, 0)
+        self.limited_editor(cols, "Websites (e.g. chess.com)", self.limited_sites, None, 1)
+        cols.columnconfigure(0, weight=1)
+        cols.columnconfigure(1, weight=1)
         row = ttk.Frame(self.body)
-        row.pack(anchor="w", pady=4)
-        ttk.Label(row, text="Default focus session length (minutes):").pack(side="left")
-        ttk.Spinbox(row, from_=10, to=720, increment=10, textvariable=self.minutes_var,
+        row.pack(anchor="w", pady=(12, 0))
+        ttk.Label(row, text="If you use a work site for distraction, block it for (minutes):"
+                  ).pack(side="left")
+        ttk.Spinbox(row, from_=10, to=240, increment=10, textvariable=self.penalty_var,
                     width=6).pack(side="left", padx=6)
-        row2 = ttk.Frame(self.body)
-        row2.pack(anchor="w", pady=4)
-        ttk.Label(row2, text="Block distracting sites for (minutes):").pack(side="left")
-        ttk.Spinbox(row2, from_=10, to=240, increment=10, textvariable=self.penalty_var,
-                    width=6).pack(side="left", padx=6)
+
+    def limited_editor(self, parent, title, items: list, choices, col: int):
+        box = ttk.LabelFrame(parent, text=title, padding=8)
+        box.grid(row=0, column=col, sticky="nsew", padx=4)
+        name = tk.StringVar()
+        minutes = tk.IntVar(value=10)
+        add_row = ttk.Frame(box)
+        add_row.pack(fill="x")
+        if choices is None:
+            ttk.Entry(add_row, textvariable=name, width=20).pack(side="left")
+        else:
+            ttk.Combobox(add_row, textvariable=name, values=choices, width=18).pack(side="left")
+        ttk.Spinbox(add_row, from_=1, to=240, increment=5, textvariable=minutes,
+                    width=4).pack(side="left", padx=4)
+        ttk.Label(add_row, text="min/day").pack(side="left")
+        listbox = tk.Listbox(box, height=10)
+        listbox.pack(fill="both", expand=True, pady=6)
+
+        def redraw():
+            listbox.delete(0, "end")
+            for it in items:
+                listbox.insert("end", f"{it['target']} — {it['minutes']} min/day")
+
+        def add():
+            raw = name.get().strip()
+            target = normalize_domain(raw) if choices is None else raw
+            try:
+                mins = max(1, int(minutes.get()))
+            except (tk.TclError, ValueError):
+                mins = 10
+            if not target:
+                return
+            items[:] = [it for it in items if it["target"].lower() != target.lower()]
+            items.append({"target": target, "minutes": mins})
+            items.sort(key=lambda it: it["target"].lower())
+            name.set("")
+            redraw()
+
+        def remove():
+            for i in reversed(listbox.curselection()):
+                del items[i]
+            redraw()
+        btns = ttk.Frame(box)
+        btns.pack(fill="x")
+        ttk.Button(add_row, text="Add", command=add).pack(side="left", padx=(6, 0))
+        ttk.Button(btns, text="Remove selected", command=remove).pack(side="left")
+        redraw()
 
     def save_step(self):
         if self.step == 0:
@@ -208,13 +266,15 @@ class Onboarding(ttk.Frame):
         if not apps:
             messagebox.showwarning("FocusGuard", "Pick at least one app.")
             return
-        if sites and not any(a in BROWSERS for a in apps):
+        work_apps = {a.lower() for a in apps}
+        lim_apps = [x for x in self.limited_apps if x["target"].lower() not in work_apps]
+        lim_sites = [x for x in self.limited_sites if x["target"] not in sites]
+        if (sites or lim_sites) and not any(a in BROWSERS for a in apps):
             if not messagebox.askyesno("FocusGuard", "You listed websites but didn't allow a "
                                        "browser, so no websites will work. Continue anyway?"):
                 return
         self.cfg.update(onboarded=True, allowed_apps=sorted(set(apps), key=str.lower),
-                        allowed_sites=sites,
-                        default_session_minutes=int(self.minutes_var.get()),
+                        allowed_sites=sites, limited_apps=lim_apps, limited_sites=lim_sites,
                         distraction_penalty_minutes=int(self.penalty_var.get()))
         save_config(self.cfg)
         log("setup saved")
@@ -237,16 +297,11 @@ class Main(ttk.Frame):
         self.setup_btn = ttk.Button(top, text="Edit setup", command=app.show_onboarding)
         self.setup_btn.pack(side="right")
 
-        ctl = ttk.Frame(self)
-        ctl.pack(fill="x", pady=8)
-        self.minutes = tk.IntVar(value=self.cfg["default_session_minutes"])
-        ttk.Label(ctl, text="Session length (min):").pack(side="left")
-        self.spin = ttk.Spinbox(ctl, from_=10, to=720, increment=10, textvariable=self.minutes, width=6)
-        self.spin.pack(side="left", padx=6)
-        self.start_btn = ttk.Button(ctl, text="Start focus session", command=self.start)
-        self.start_btn.pack(side="left")
-        self.end_btn = ttk.Button(ctl, text="End early…", command=self.end_early)
-        self.end_btn.pack(side="left", padx=6)
+        ttk.Label(self, text="Work apps and sites always work. Everything else is blocked.",
+                  foreground="#555").pack(anchor="w", pady=(2, 8))
+        ttk.Label(self, text="Limited for today (resets at midnight)").pack(anchor="w")
+        self.limited_box = tk.Listbox(self, height=4)
+        self.limited_box.pack(fill="x", pady=(0, 8))
 
         lists = ttk.Frame(self)
         lists.pack(fill="x")
@@ -279,20 +334,19 @@ class Main(ttk.Frame):
 
     # -------------------------------------------------- status
     def refresh(self):
-        st = load_state()
+        cfg, st = load_config(), load_state()
         now = time.time()
-        active = session_active(st)
-        if active:
-            self.status.config(text=f"Focusing — {fmt_minutes(st['session']['ends_at'] - now)} left",
-                               foreground="#2a7")
-            self.start_btn.state(["disabled"])
-            self.end_btn.state(["!disabled"])
-            self.setup_btn.state(["disabled"])
-        else:
-            self.status.config(text="Not in a focus session", foreground="#888")
-            self.start_btn.state(["!disabled"])
-            self.end_btn.state(["disabled"])
-            self.setup_btn.state(["!disabled"])
+        self.status.config(text="Blocking is on", foreground="#2a7")
+        self.limited_box.delete(0, "end")
+        for it in limited_items(cfg):
+            left = seconds_left(it, st)
+            if left > 0:
+                line = f"{it['target']} — {fmt_minutes(left)} of {it['minutes']}m left"
+            else:
+                line = f"⛔ {it['target']} — used up today"
+            self.limited_box.insert("end", line)
+        if not limited_items(cfg):
+            self.limited_box.insert("end", "Nothing yet. Add some in Edit setup.")
         self.grants_box.delete(0, "end")
         for g in st["grants"]:
             self.grants_box.insert("end", f"{g['target']} — {fmt_minutes(g['expires_at'] - now)} left — {g['purpose']}")
@@ -304,29 +358,6 @@ class Main(ttk.Frame):
             ago = int((now - b["at"]) // 60)
             self.blocks_box.insert("end", f"{b['target']} ({ago}m ago) — {b['reason']}")
         self.after(2000, self.refresh)
-
-    def start(self):
-        minutes = max(1, int(self.minutes.get()))
-
-        def go(s):
-            s["session"] = {"started_at": time.time(), "ends_at": time.time() + minutes * 60}
-            s["grants"] = []
-        update_state(go)
-        log(f"session started for {minutes}m")
-        self.say("sys", f"Focus session started for {minutes} minutes.")
-
-    def end_early(self):
-        typed = simpledialog.askstring(
-            "End focus session early",
-            f'To end early, type exactly:\n\n{END_EARLY_PHRASE}', parent=self)
-        if typed is None:
-            return
-        if typed.strip() != END_EARLY_PHRASE:
-            messagebox.showinfo("FocusGuard", "That didn't match. Your session continues.")
-            return
-        update_state(lambda s: s.update(session=None, grants=[]))
-        log("session ended early by user")
-        self.say("sys", "Session ended early.")
 
     # -------------------------------------------------- chat
     def say(self, who: str, text: str):
@@ -340,12 +371,13 @@ class Main(ttk.Frame):
         cfg, st = load_config(), load_state()
         now = time.time()
         lines = [f"Time now: {time.strftime('%A %H:%M')}"]
-        if session_active(st):
-            lines.append(f"Focus session active, {fmt_minutes(st['session']['ends_at'] - now)} left.")
-        else:
-            lines.append("No focus session is running, so nothing is blocked right now.")
-        lines.append("Allowed apps: " + ", ".join(cfg["allowed_apps"]))
-        lines.append("Allowed sites: " + (", ".join(cfg["allowed_sites"]) or "none"))
+        lines.append("Work apps (always allowed): " + ", ".join(cfg["allowed_apps"]))
+        lines.append("Work sites (always allowed): " + (", ".join(cfg["allowed_sites"]) or "none"))
+        lines.append("Limited items (daily allowance): " + (", ".join(
+            f"{it['kind']} {it['target']} ({it['minutes']} min/day, "
+            + (f"{fmt_minutes(seconds_left(it, st))} left today)" if seconds_left(it, st) > 0
+               else "used up today)")
+            for it in limited_items(cfg)) or "none"))
         lines.append("Currently unlocked: " + (", ".join(
             f"{g['target']} ({g['purpose']})" for g in st["grants"]) or "nothing"))
         lines.append("Distraction penalties (cannot be lifted): " + (", ".join(
@@ -431,9 +463,17 @@ class App(tk.Tk):
         self.frame.pack(fill="both", expand=True)
 
     def show_onboarding(self):
-        if session_active(load_state()):
-            messagebox.showinfo("FocusGuard", "You can't change your setup during a focus session.")
-            return
+        if load_config()["onboarded"]:
+            typed = simpledialog.askstring(
+                "Edit setup",
+                f"Changing your lists changes what gets blocked.\nTo continue, type exactly:\n\n{EDIT_PHRASE}",
+                parent=self)
+            if typed is None:
+                return
+            if typed.strip() != EDIT_PHRASE:
+                messagebox.showinfo("FocusGuard", "That didn't match. Your setup is unchanged.")
+                return
+            log("user opened setup to edit lists")
         self.swap(Onboarding)
 
     def show_main(self):

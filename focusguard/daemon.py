@@ -8,8 +8,8 @@ from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 
 from . import ai
-from .common import (domain_matches, find_item, host_of, load_config, load_state,
-                     log, session_active, update_state)
+from .common import (domain_matches, find_item, host_of, limited_items, load_config,
+                     load_state, log, seconds_left, update_state, usage_key)
 from .macos import (ALWAYS_ALLOWED, BROWSERS, UNMONITORABLE_BROWSERS, block_page_url,
                     browser_tab, frontmost_app, notify, quit_app, redirect_tab,
                     window_title)
@@ -17,6 +17,8 @@ from .macos import (ALWAYS_ALLOWED, BROWSERS, UNMONITORABLE_BROWSERS, block_page
 POLL_SECONDS = 2.5
 DWELL_SECONDS = 8      # stay on a page this long before the AI judges it
 NOTIFY_COOLDOWN = 20
+MAX_TICK_CREDIT = 5    # seconds counted per tick at most (ignores sleep/wake gaps)
+WARN_AT = (300, 60)    # warn when this many seconds of a daily allowance are left
 
 # Obvious time sinks on otherwise-useful sites: penalised instantly, no AI call.
 QUICK_DISTRACTIONS = [
@@ -35,7 +37,8 @@ class Daemon:
         self.samples = defaultdict(lambda: deque(maxlen=12))  # grant id -> activity
         self.last_check = {}                # grant id -> ts
         self.last_notify = {}
-        self.was_active = False
+        self.last_tick = time.time()
+        self.warned = set()                 # (day, usage key, threshold)
 
     # ------------------------------------------------------------ main loop
     def run(self):
@@ -51,16 +54,11 @@ class Daemon:
         cfg = load_config()
         if not cfg["onboarded"]:
             return
+        now = time.time()
+        self.elapsed = min(max(0.0, now - self.last_tick), MAX_TICK_CREDIT)
+        self.last_tick = now
         self.collect_ai_results(cfg)
         st = load_state()
-        active = session_active(st)
-        if self.was_active and not active:
-            update_state(lambda s: s.update(session=None, grants=[]))
-            notify("FocusGuard", "Focus session finished. Everything is unblocked.")
-            log("session ended")
-        self.was_active = active
-        if not active:
-            return
 
         front = frontmost_app()
         if not front or front.name in ALWAYS_ALLOWED:
@@ -76,7 +74,12 @@ class Daemon:
         grant = find_item(st["grants"], "app", name)
         allowed = name.lower() in {a.lower() for a in cfg["allowed_apps"]}
         if not allowed and not grant:
-            self.block_app(front, "not on your allowed list")
+            limited = find_item(limited_items(cfg), "app", name)
+            if not limited:
+                self.block_app(front, "not on your allowed list")
+            elif not self.spend(limited, st):
+                self.block_app(front, "today's time is used up; "
+                                      "it unblocks at midnight")
             return
         if grant:
             title = window_title(name)
@@ -107,6 +110,12 @@ class Daemon:
         if allowed_domain:
             self.check_distraction(app, host, allowed_domain, url, title, cfg)
             return
+        limited = find_item(limited_items(cfg), "site", host)
+        if limited:
+            if not self.spend(limited, st):
+                self.block_site(app, host, "Today's time on this site is used up. "
+                                           "It unblocks at midnight.")
+            return
         self.block_site(app, host, "Not on your allowed list. Open FocusGuard and tell it why you need this.")
 
     def check_distraction(self, app, host, allowed_domain, url, title, cfg):
@@ -130,6 +139,33 @@ class Daemon:
             return
         fut = self.pool.submit(ai.check_distraction, url, title, cfg["allowed_sites"])
         self.pending[key] = ("distraction", {"domain": allowed_domain, "key": key}, fut)
+
+    # ------------------------------------------------------------ limited items
+    def spend(self, item: dict, st: dict) -> bool:
+        """Count this tick against a limited item's daily allowance.
+        Returns False when the allowance is already used up."""
+        if seconds_left(item, st) <= 0:
+            return False
+        key = usage_key(item["kind"], item["target"])
+        secs = self.elapsed
+
+        def add(s):
+            s["usage"]["seconds"][key] = s["usage"]["seconds"].get(key, 0) + secs
+        st = update_state(add)
+        left = seconds_left(item, st)
+        day = st["usage"]["day"]
+        crossed = [(day, key, t) for t in WARN_AT
+                   if left <= t and (day, key, t) not in self.warned]
+        if crossed:
+            self.warned.update(crossed)
+            if left > 0:
+                notify("FocusGuard", f"{item['target']}: {max(1, round(left / 60))} min "
+                                     "left for today.")
+        if len(self.warned) > 200:
+            self.warned = {m for m in self.warned if m[0] == day}
+        if left <= 0:
+            log(f"daily limit reached for {item['kind']} {item['target']}")
+        return True
 
     # ------------------------------------------------------------ unlocked items
     def watch_grant(self, grant: dict, activity: str, cfg: dict):

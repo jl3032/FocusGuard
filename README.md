@@ -1,12 +1,14 @@
 # FocusGuard
 
-A focus tool for macOS that applies to **one Mac user account only**.
+A self-control tool for macOS that applies to **one Mac user account only**. Blocking is always on; there are no sessions to start.
 
-- **Onboarding:** you pick the apps and websites you use (or might use). Everything else gets blocked during a focus session.
-- **Focus sessions** run for a set time (the default comes from setup). When the time runs out, everything unblocks. To end a session early you have to type a confirmation sentence.
+- **Work apps and sites:** you pick the apps and websites you use for work. They always work.
+- **Limited apps and sites:** you pick a few you're allowed for a set time each day, e.g. chess.com for 10 minutes. Time only counts while it's on screen; you get a warning at 5 and 1 minutes left, then it's blocked until midnight.
+- **Everything else is blocked**, e.g. ea.com when only chess.com is on your limited list.
 - **Built-in AI gatekeeper:** open FocusGuard and tell the AI why you need something that's blocked. If your reason is specific and real, it unlocks the app or site for a limited time and writes down what you said you'd do there.
 - **Monitoring after an unlock:** about every 60 seconds the AI compares your recent pages or window titles with that stated purpose. If you're off task, access is taken away and the item is blocked again.
-- **Distraction penalty:** your allowed sites are still watched. If you start doing something distracting on one (gaming videos on YouTube, r/all, Shorts or Reels), that whole site is blocked for an hour.
+- **Distraction penalty:** your work sites are still watched. If you start doing something distracting on one (gaming videos on YouTube, r/all, Shorts or Reels), that whole site is blocked for an hour.
+- **Changing your lists** needs you to type a confirmation sentence, so it isn't a one-click escape.
 
 ## Why it only affects one user
 
@@ -16,9 +18,9 @@ The blocker runs as a **LaunchAgent** in `~/Library/LaunchAgents`, which macOS s
 
 | What | How |
 |---|---|
-| Apps not on your list | Asked to quit as soon as they come to the front (your unsaved work still gets a save prompt) |
+| Apps not on your lists (or out of daily time) | Asked to quit as soon as they come to the front (your unsaved work still gets a save prompt) |
 | Websites in Safari, Chrome, Arc, Brave, Edge, Vivaldi | The current tab's URL is read through AppleScript; a blocked tab is sent to a "Stay on task" page |
-| Firefox, Opera, Zen, Orion | Their URLs can't be read, so these apps are always blocked during a session |
+| Firefox, Opera, Zen, Orion | Their URLs can't be read, so these apps are always blocked |
 
 ## Install (on this Mac or any other)
 
@@ -55,12 +57,12 @@ Permissions macOS will ask for:
 ## Settings
 
 `~/Library/Application Support/FocusGuard/config.json`:
-`max_grant_minutes` (90), `distraction_penalty_minutes` (60), `on_task_check_seconds` (60), `provider` (`ollama` or `anthropic`), `ollama_model` (`qwen2.5:7b`; on a Mac with 16 GB+ memory you can try a bigger model, e.g. `qwen2.5:14b`, after `ollama pull` for it), `claude_model` (`claude-opus-5-5`; `claude-haiku-5-5` is much cheaper). The log is in `activity.log` in the same folder.
+`allowed_apps` / `allowed_sites` (work), `limited_apps` / `limited_sites` (`[{"target": "chess.com", "minutes": 10}]`), `max_grant_minutes` (90), `distraction_penalty_minutes` (60), `on_task_check_seconds` (60), `provider` (`ollama` or `anthropic`), `ollama_model` (`qwen2.5:7b`; on a Mac with 16 GB+ memory you can try a bigger model, e.g. `qwen2.5:14b`, after `ollama pull` for it), `claude_model` (`claude-opus-5-5`; `claude-haiku-5-5` is much cheaper). The log is in `activity.log` in the same folder.
 
 ## Files
 
-- `focusguard/daemon.py`: background enforcer (blocks things, watches unlocks, applies penalties)
-- `focusguard/gui.py`: onboarding, session controls, AI chat
+- `focusguard/daemon.py`: background enforcer (blocks things, counts daily time on limited items, watches unlocks, applies penalties)
+- `focusguard/gui.py`: setup (work + limited lists), time left today, AI chat
 - `focusguard/ai.py`: Claude calls (gatekeeper, on-task check, distraction check)
 - `focusguard/macos.py`: `lsappinfo` and `osascript` helpers
 - `focusguard/common.py`: config/state files, Keychain, domain matching

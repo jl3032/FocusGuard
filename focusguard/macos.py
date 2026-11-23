@@ -16,7 +16,7 @@ CHROME_LIKE = {"Google Chrome", "Google Chrome Canary", "Brave Browser",
                "Microsoft Edge", "Arc", "Vivaldi", "Chromium"}
 BROWSERS = SAFARI_LIKE | CHROME_LIKE
 # Browsers that don't expose the current URL to AppleScript, so websites
-# can't be checked in them. FocusGuard always blocks these during a session.
+# can't be checked in them. FocusGuard always blocks these.
 UNMONITORABLE_BROWSERS = {"Firefox", "Firefox Developer Edition", "Opera",
                           "Zen", "Zen Browser", "Orion", "LibreWolf", "Tor Browser"}
 
