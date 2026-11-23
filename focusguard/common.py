@@ -1,39 +1,55 @@
-"""Shared config/state storage, matching helpers and API-key storage.
+"""Shared config/state storage, matching helpers and the client for the root service.
 
-Everything lives in the current user's home folder, so FocusGuard only ever
-affects the macOS user account it was installed in.
+FocusGuard is installed system-wide but only enforces for one Mac user (the
+"user" in config.json). Its files live in /Library/Application Support/FocusGuard
+and are owned by root: the blocked user can read them but not change them.
+Only the root service (rootd) writes state; config changes go through the admin
+tool, which needs an administrator password.
 """
 from __future__ import annotations
 
 import contextlib
 import copy
 import fcntl
-import getpass
 import json
 import os
-import subprocess
+import socket
 import time
 import uuid
 from pathlib import Path
 from urllib.parse import urlparse
 
-APP_DIR = Path.home() / "Library" / "Application Support" / "FocusGuard"
+APP_DIR = Path(os.environ.get("FOCUSGUARD_DIR", "/Library/Application Support/FocusGuard"))
 CONFIG_PATH = APP_DIR / "config.json"
 STATE_PATH = APP_DIR / "state.json"
 LOCK_PATH = APP_DIR / ".lock"
 LOG_PATH = APP_DIR / "activity.log"
+KEY_PATH = APP_DIR / "anthropic_key"          # root-only (0600)
+SOCKET_PATH = os.environ.get("FOCUSGUARD_SOCKET", str(APP_DIR / "focusguard.sock"))
 REPO_DIR = Path(__file__).resolve().parent.parent
 BLOCK_PAGE = REPO_DIR / "assets" / "blocked.html"
-KEYCHAIN_SERVICE = "FocusGuard-Anthropic"
+VENV_PYTHON = APP_DIR / "venv" / "bin" / "python"
+LAUNCH_DIR = REPO_DIR / "launch"
+GUI_SCRIPT = LAUNCH_DIR / "gui.py"
+ADMIN_SCRIPT = LAUNCH_DIR / "admin.py"
+GUI_APP = Path("/Applications/FocusGuard.app")
+AGENT_LABEL = "com.focusguard.agent"
+ROOT_LABEL = "com.focusguard.root"
+AGENT_PLIST = Path("/Library/LaunchAgents") / f"{AGENT_LABEL}.plist"
 
 DEFAULT_CONFIG = {
     "onboarded": False,
+    "user": "",                  # the one Mac user FocusGuard enforces for
+    "uid": 0,
     # Work items: always allowed.
     "allowed_apps": [],          # app display names, e.g. "Safari", "Notion"
     "allowed_sites": [],         # bare domains, e.g. "github.com"
     # Limited items: allowed for a few minutes a day, then blocked until midnight.
     "limited_apps": [],          # [{"target": "Steam", "minutes": 15}]
     "limited_sites": [],         # [{"target": "chess.com", "minutes": 10}]
+    # Where each picked app really lives, so a renamed copy (a game called
+    # "Notes.app") doesn't count: {"notes": {"path": ..., "bundle_id": ...}}
+    "app_ids": {},
     # Everything else is always blocked unless the AI unlocks it.
     "distraction_penalty_minutes": 60,
     "max_grant_minutes": 90,
@@ -44,6 +60,8 @@ DEFAULT_CONFIG = {
     "ollama_url": "http://localhost:11434",
     "claude_model": "claude-opus-5-5",
 }
+# Keys the admin tool accepts from the setup window.
+EDITABLE_KEYS = set(DEFAULT_CONFIG) - {"onboarded", "user", "uid"}
 
 DEFAULT_STATE = {
     "grants": [],         # temporary AI unlocks
@@ -52,14 +70,14 @@ DEFAULT_STATE = {
     "usage": {"day": "", "seconds": {}},  # time spent today on limited items
     "paused_until": 0,    # blocking is off until this time (needs an admin password)
     "no_permission": {},  # browser -> last time macOS refused to let us read its tabs
+    "agent_seen": 0,      # last time the user-session helper checked in
 }
 
 
 # ---------------------------------------------------------------- storage
 @contextlib.contextmanager
 def _locked():
-    APP_DIR.mkdir(parents=True, exist_ok=True)
-    with open(LOCK_PATH, "w") as f:
+    with open(LOCK_PATH, "a") as f:
         fcntl.flock(f, fcntl.LOCK_EX)
         try:
             yield
@@ -71,7 +89,7 @@ def _read(path: Path, default: dict) -> dict:
     merged = copy.deepcopy(default)
     try:
         merged.update(json.loads(path.read_text()))
-    except (FileNotFoundError, json.JSONDecodeError):
+    except (FileNotFoundError, PermissionError, json.JSONDecodeError):
         pass
     return merged
 
@@ -79,6 +97,7 @@ def _read(path: Path, default: dict) -> dict:
 def _write(path: Path, data: dict) -> None:
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(data, indent=2))
+    os.chmod(tmp, 0o644)
     os.replace(tmp, path)
 
 
@@ -94,9 +113,10 @@ def _prune(st: dict) -> dict:
     return st
 
 
+# Reads need no lock (writes are atomic renames), so the GUI and the user-session
+# helper can read the root-owned files without being able to write anything.
 def load_config() -> dict:
-    with _locked():
-        return _read(CONFIG_PATH, DEFAULT_CONFIG)
+    return _read(CONFIG_PATH, DEFAULT_CONFIG)
 
 
 def save_config(cfg: dict) -> None:
@@ -105,12 +125,11 @@ def save_config(cfg: dict) -> None:
 
 
 def load_state() -> dict:
-    with _locked():
-        return _prune(_read(STATE_PATH, DEFAULT_STATE))
+    return _prune(_read(STATE_PATH, DEFAULT_STATE))
 
 
 def update_state(fn) -> dict:
-    """Read-modify-write the state under a lock (daemon and GUI share it)."""
+    """Read-modify-write the state under a lock (root service only)."""
     with _locked():
         st = _prune(_read(STATE_PATH, DEFAULT_STATE))
         fn(st)
@@ -146,12 +165,25 @@ def new_id() -> str:
 
 
 def log(msg: str) -> None:
-    APP_DIR.mkdir(parents=True, exist_ok=True)
-    with open(LOG_PATH, "a") as f:
-        f.write(time.strftime("%Y-%m-%d %H:%M:%S ") + msg + "\n")
+    try:
+        with open(LOG_PATH, "a") as f:
+            f.write(time.strftime("%Y-%m-%d %H:%M:%S ") + msg + "\n")
+    except OSError:
+        pass   # the GUI and helper can't write the root-owned log; that's fine
 
 
 # ---------------------------------------------------------------- matching
+# Platforms where anyone can host a site (lots of "unblocked games" live here).
+# Allowing "google.com" or "vercel.app" doesn't cover every site hosted on them;
+# list the exact site (e.g. "myproject.vercel.app") to allow one.
+HOSTING_PLATFORMS = (
+    "sites.google.com", "vercel.app", "github.io", "netlify.app", "pages.dev", "web.app",
+    "firebaseapp.com", "glitch.me", "replit.app", "repl.co", "onrender.com",
+    "herokuapp.com", "surge.sh", "neocities.org", "weebly.com", "wixsite.com",
+    "blogspot.com", "itch.io", "webflow.io", "notion.site", "carrd.co", "godaddysites.com",
+)
+
+
 def normalize_domain(text: str) -> str:
     text = text.strip().lower()
     if not text:
@@ -178,33 +210,71 @@ def domain_matches(host: str, domain: str) -> bool:
     return host == domain or host.endswith("." + domain)
 
 
+def site_covers(host: str, domain: str) -> bool:
+    """Does a listed domain cover this host? Like domain_matches, except a broad entry
+    doesn't cover everything hosted on a hosting platform under it."""
+    if not domain or not domain_matches(host, domain):
+        return False
+    platform = next((p for p in HOSTING_PLATFORMS if domain_matches(host, p)), None)
+    if platform and domain_matches(platform, domain) and host != domain:
+        return False
+    return True
+
+
+def match_site(host: str, domains: list):
+    return next((d for d in domains if site_covers(host, d)), None)
+
+
 def find_item(items: list, kind: str, target: str):
     for it in items:
         if it["kind"] != kind:
             continue
-        if kind == "site" and domain_matches(target, it["target"]):
+        if kind == "site" and site_covers(target, it["target"]):
             return it
         if kind == "app" and it["target"].lower() == target.lower():
             return it
     return None
 
 
-# ---------------------------------------------------------------- API key (Keychain)
+# ---------------------------------------------------------------- API key (root-only file)
 def get_api_key():
     if os.environ.get("ANTHROPIC_API_KEY"):
         return os.environ["ANTHROPIC_API_KEY"]
-    r = subprocess.run(
-        ["security", "find-generic-password", "-a", getpass.getuser(),
-         "-s", KEYCHAIN_SERVICE, "-w"],
-        capture_output=True, text=True,
-    )
-    return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else None
+    try:
+        return KEY_PATH.read_text().strip() or None
+    except OSError:
+        return None
 
 
-def set_api_key(key: str) -> bool:
-    r = subprocess.run(
-        ["security", "add-generic-password", "-U", "-a", getpass.getuser(),
-         "-s", KEYCHAIN_SERVICE, "-w", key.strip()],
-        capture_output=True, text=True,
-    )
-    return r.returncode == 0
+def api_key_saved() -> bool:
+    return KEY_PATH.exists()
+
+
+# ---------------------------------------------------------------- talking to the root service
+class ServiceError(Exception):
+    pass
+
+
+def request(op: str, timeout: float = 5, **payload) -> dict:
+    """Send one request to the root service and return its JSON reply."""
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+            s.settimeout(timeout)
+            s.connect(SOCKET_PATH)
+            s.sendall(json.dumps({"op": op, **payload}).encode() + b"\n")
+            buf = b""
+            while not buf.endswith(b"\n"):
+                chunk = s.recv(65536)
+                if not chunk:
+                    break
+                buf += chunk
+    except (OSError, socket.timeout) as e:
+        raise ServiceError("FocusGuard's background service isn't responding. "
+                           "Try again in a few seconds.") from e
+    try:
+        reply = json.loads(buf)
+    except json.JSONDecodeError as e:
+        raise ServiceError("Got a garbled reply from FocusGuard's service.") from e
+    if reply.get("error"):
+        raise ServiceError(reply["error"])
+    return reply

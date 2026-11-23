@@ -1,17 +1,18 @@
 """FocusGuard window: setup (work / limited lists), daily allowances, and the AI unblock chat."""
 from __future__ import annotations
 
+import json
+import os
 import subprocess
+import tempfile
 import threading
 import time
 import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
 
-from . import ai
-from .common import (find_item, get_api_key, limited_items, load_config, load_state, log,
-                     new_id, normalize_domain, paused, save_config, seconds_left, set_api_key,
-                     update_state)
-from .macos import BROWSERS, UNMONITORABLE_BROWSERS, admin_auth, list_installed_apps
+from .common import (HOSTING_PLATFORMS, ServiceError, api_key_saved, limited_items,
+                     load_config, load_state, normalize_domain, paused, request, seconds_left)
+from .macos import BROWSERS, UNMONITORABLE_BROWSERS, installed_apps, run_admin
 
 COMMON_SITES = [
     "google.com", "docs.google.com", "drive.google.com", "mail.google.com",
@@ -19,6 +20,26 @@ COMMON_SITES = [
     "claude.ai", "notion.so", "canva.com", "office.com", "outlook.com",
     "slack.com", "zoom.us", "khanacademy.org", "youtube.com", "reddit.com",
 ]
+
+
+def summarize_changes(old: dict, new: dict) -> str:
+    """Short description of what a settings change allows, shown in the admin password
+    dialog so whoever types the password knows what they're approving."""
+    def names(cfg, key):
+        return {(x["target"] if isinstance(x, dict) else x).lower() for x in cfg.get(key, [])}
+    added = []
+    for key in ("allowed_apps", "allowed_sites", "limited_apps", "limited_sites"):
+        added += sorted(names(new, key) - names(old, key))
+    more_time = [x["target"] for x in new.get("limited_apps", []) + new.get("limited_sites", [])
+                 if any(o["target"].lower() == x["target"].lower() and x["minutes"] > o["minutes"]
+                        for o in old.get("limited_apps", []) + old.get("limited_sites", []))]
+    parts = []
+    if added:
+        parts.append("Newly allowed: " + ", ".join(added))
+    if more_time:
+        parts.append("More daily time for: " + ", ".join(more_time))
+    text = ". ".join(parts) or "No new apps or sites are allowed."
+    return text if len(text) < 300 else text[:297] + "…"
 
 
 def fmt_minutes(seconds: float) -> str:
@@ -51,6 +72,7 @@ class Onboarding(ttk.Frame):
         self.site_vars = {}
         self.extra_apps = tk.StringVar()
         self.key_var = tk.StringVar()
+        self.app_info = installed_apps()     # name -> {"path", "bundle_id"}
         self.provider_var = tk.StringVar(value=self.cfg.get("provider", "ollama"))
         self.limited_apps = [dict(x) for x in self.cfg["limited_apps"]]
         self.limited_sites = [dict(x) for x in self.cfg["limited_sites"]]
@@ -99,9 +121,10 @@ class Onboarding(ttk.Frame):
         ttk.Radiobutton(self.body, variable=self.provider_var, value="anthropic",
                         text="Claude API (paid, smarter; needs a key from console.anthropic.com)"
                         ).pack(anchor="w", pady=(10, 2))
-        ttk.Label(self.body, text="Claude API key (stored in your Keychain):").pack(anchor="w", padx=24)
+        ttk.Label(self.body, text="Claude API key (stored where only an administrator can read it):"
+                  ).pack(anchor="w", padx=24)
         ttk.Entry(self.body, textvariable=self.key_var, show="•", width=60).pack(anchor="w", padx=24)
-        if get_api_key():
+        if api_key_saved():
             ttk.Label(self.body, text="A key is already saved. Leave this blank to keep it.",
                       foreground="#2a7").pack(anchor="w", padx=24, pady=4)
 
@@ -117,7 +140,7 @@ class Onboarding(ttk.Frame):
         sf = ScrollFrame(self.body, height=330)
         sf.pack(fill="both", expand=True)
         chosen = {a.lower() for a in self.cfg["allowed_apps"]}
-        apps = [a for a in list_installed_apps() if a not in UNMONITORABLE_BROWSERS]
+        apps = [a for a in self.app_info if a not in UNMONITORABLE_BROWSERS]
         for name in apps:
             if name not in self.app_vars:
                 self.app_vars[name] = tk.BooleanVar(value=name.lower() in chosen)
@@ -149,7 +172,9 @@ class Onboarding(ttk.Frame):
                      "These always work; other sites are blocked (you can give some a daily time "
                      "allowance on the next step). Allowed sites are still watched: if you start "
                      "doing something distracting on one (e.g. gaming videos on YouTube), that site "
-                     "is blocked for an hour. Subdomains are included automatically.")
+                     "is blocked for an hour. Subdomains are included automatically, except on hosting "
+                     "platforms (vercel.app, github.io, sites.google.com…), where you list the exact "
+                     "site, e.g. myproject.vercel.app.")
         grid = ttk.Frame(self.body)
         grid.pack(anchor="w", fill="x")
         chosen = set(self.cfg["allowed_sites"])
@@ -173,7 +198,7 @@ class Onboarding(ttk.Frame):
                      "warning 5 minutes and 1 minute before.")
         cols = ttk.Frame(self.body)
         cols.pack(fill="both", expand=True)
-        apps = [a for a in list_installed_apps()
+        apps = [a for a in self.app_info
                 if a not in BROWSERS and a not in UNMONITORABLE_BROWSERS]
         self.limited_editor(cols, "Apps (e.g. Steam)", self.limited_apps, apps, 0)
         self.limited_editor(cols, "Websites (e.g. chess.com)", self.limited_sites, None, 1)
@@ -237,10 +262,7 @@ class Onboarding(ttk.Frame):
         if self.step == 0:
             self.cfg["provider"] = self.provider_var.get()
             key = self.key_var.get().strip()
-            if key and not set_api_key(key):
-                messagebox.showerror("FocusGuard", "Couldn't save the key to Keychain.")
-                return False
-            if self.cfg["provider"] == "anthropic" and not key and not get_api_key():
+            if self.cfg["provider"] == "anthropic" and not key and not api_key_saved():
                 messagebox.showwarning("FocusGuard", "Paste your Claude API key, or choose the free local AI.")
                 return False
         elif self.step == 2:
@@ -275,11 +297,35 @@ class Onboarding(ttk.Frame):
             if not messagebox.askyesno("FocusGuard", "You listed websites but didn't allow a "
                                        "browser, so no websites will work. Continue anyway?"):
                 return
-        self.cfg.update(onboarded=True, allowed_apps=sorted(set(apps), key=str.lower),
-                        allowed_sites=sites, limited_apps=lim_apps, limited_sites=lim_sites,
-                        distraction_penalty_minutes=int(self.penalty_var.get()))
-        save_config(self.cfg)
-        log("setup saved")
+        broad = [d for d in sites if d in HOSTING_PLATFORMS]
+        if broad and not messagebox.askyesno(
+                "FocusGuard", f"{', '.join(broad)} is a hosting platform: listing it only allows "
+                "that exact address, not the sites hosted on it (lots of game sites live there). "
+                "Add the exact sites you need, e.g. myproject.vercel.app.\n\nSave anyway?"):
+            return
+        picked = {a.lower() for a in apps} | {x["target"].lower() for x in lim_apps}
+        new = {
+            "allowed_apps": sorted(set(apps), key=str.lower), "allowed_sites": sites,
+            "limited_apps": lim_apps, "limited_sites": lim_sites,
+            "distraction_penalty_minutes": int(self.penalty_var.get()),
+            "provider": self.cfg["provider"],
+            "app_ids": {n.lower(): info for n, info in self.app_info.items() if n.lower() in picked},
+        }
+        if self.key_var.get().strip():
+            new["_api_key"] = self.key_var.get().strip()
+        fd, tmp = tempfile.mkstemp(prefix="focusguard-", suffix=".json")
+        with os.fdopen(fd, "w") as f:
+            json.dump(new, f)
+        ok, msg = run_admin(["set-config", tmp], "FocusGuard: an administrator must approve "
+                            "these settings. " + summarize_changes(self.cfg, new))
+        if not ok:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            messagebox.showinfo("FocusGuard", "Settings were not saved. An administrator's "
+                                f"name and password are needed.\n\n({msg})")
+            return
         self.app.show_main()
 
 
@@ -289,8 +335,8 @@ class Main(ttk.Frame):
         super().__init__(app, padding=16)
         self.app = app
         self.cfg = load_config()
-        self.chat = []           # Anthropic-format messages for the gatekeeper
         self.busy = False
+        self.service_ok = True
 
         top = ttk.Frame(self)
         top.pack(fill="x")
@@ -356,6 +402,9 @@ class Main(ttk.Frame):
             self.pause_btn.pack_forget()
             if not self.resume_btn.winfo_manager():
                 self.resume_btn.pack(side="right", padx=6)
+        elif not self.service_ok:
+            self.status.config(text="FocusGuard's service isn't running — reinstall it",
+                               foreground="#c0392b")
         else:
             self.status.config(text="Blocking is on", foreground="#2a7")
             self.resume_btn.pack_forget()
@@ -363,8 +412,8 @@ class Main(ttk.Frame):
                 self.pause_btn.pack(side="right", padx=6, after=self.setup_btn)
         denied = sorted(st["no_permission"])
         if denied:
-            self.perm_label.config(text=f"Websites are NOT being blocked in {', '.join(denied)}: "
-                                        "macOS hasn't allowed FocusGuard to control it. Turn on "
+            self.perm_label.config(text=f"{', '.join(denied)} keeps being closed: macOS hasn't "
+                                        "allowed FocusGuard to check its websites. Turn on "
                                         "python → " + ", ".join(denied) + " under Automation.")
             if not self.perm_shown:
                 self.perm_bar.pack(fill="x", pady=(4, 4), after=self.status.master)
@@ -393,6 +442,14 @@ class Main(ttk.Frame):
             ago = int((now - b["at"]) // 60)
             self.blocks_box.insert("end", f"{b['target']} ({ago}m ago) — {b['reason']}")
         self.after(2000, self.refresh)
+        threading.Thread(target=self.check_service, daemon=True).start()
+
+    def check_service(self):
+        try:
+            request("ping", timeout=2)
+            self.service_ok = True
+        except ServiceError:
+            self.service_ok = False
 
     def pause(self):
         minutes = simpledialog.askinteger(
@@ -401,17 +458,20 @@ class Main(ttk.Frame):
             minvalue=5, maxvalue=240, initialvalue=30)
         if not minutes:
             return
-        if not admin_auth(f"FocusGuard wants to pause all blocking for {minutes} minutes."):
-            self.say("sys", "Pause cancelled: no administrator password.")
+        ok, msg = run_admin(["pause", minutes],
+                            f"FocusGuard: an administrator must approve pausing ALL blocking "
+                            f"for {minutes} minutes.")
+        if not ok:
+            self.say("sys", f"Not paused: an administrator's password is needed. ({msg})")
             return
-        update_state(lambda s: s.update(paused_until=time.time() + minutes * 60))
-        log(f"blocking paused for {minutes}m (admin approved)")
         self.say("sys", f"Blocking is paused for {minutes} minutes. It turns back on by itself.")
 
     def resume(self):
-        update_state(lambda s: s.update(paused_until=0))
-        log("pause ended early by user")
-        self.say("sys", "Blocking is back on.")
+        try:
+            request("resume")
+            self.say("sys", "Blocking is back on.")
+        except ServiceError as e:
+            self.say("sys", str(e))
 
     # -------------------------------------------------- chat
     def say(self, who: str, text: str):
@@ -421,79 +481,35 @@ class Main(ttk.Frame):
         self.log_text.config(state="disabled")
         self.log_text.see("end")
 
-    def context(self) -> str:
-        cfg, st = load_config(), load_state()
-        now = time.time()
-        lines = [f"Time now: {time.strftime('%A %H:%M')}"]
-        lines.append("Work apps (always allowed): " + ", ".join(cfg["allowed_apps"]))
-        lines.append("Work sites (always allowed): " + (", ".join(cfg["allowed_sites"]) or "none"))
-        lines.append("Limited items (daily allowance): " + (", ".join(
-            f"{it['kind']} {it['target']} ({it['minutes']} min/day, "
-            + (f"{fmt_minutes(seconds_left(it, st))} left today)" if seconds_left(it, st) > 0
-               else "used up today)")
-            for it in limited_items(cfg)) or "none"))
-        lines.append("Currently unlocked: " + (", ".join(
-            f"{g['target']} ({g['purpose']})" for g in st["grants"]) or "nothing"))
-        lines.append("Distraction penalties (cannot be lifted): " + (", ".join(
-            f"{p['target']} until {time.strftime('%H:%M', time.localtime(p['until']))}"
-            for p in st["penalties"]) or "none"))
-        lines.append("Recently blocked: " + (", ".join(
-            f"{b['kind']} {b['target']} ({b['reason']})" for b in st["recent_blocks"][-8:]) or "nothing"))
-        return "\n".join(lines)
-
     def send(self):
         text = self.entry.get().strip()
         if not text or self.busy:
             return
         self.entry.delete(0, "end")
         self.say("you", text)
-        self.chat.append({"role": "user", "content": text})
-        self.chat = self.chat[-20:]
-        if self.chat[0]["role"] != "user":
-            self.chat = self.chat[1:]
         self.busy = True
         self.send_btn.state(["disabled"])
         self.say("sys", "Thinking…")
-        chat, ctx = list(self.chat), self.context()
 
         def work():
             try:
-                result = ai.gatekeeper(chat, ctx)
+                result = request("chat", text=text, timeout=240)
                 self.after(0, lambda: self.on_reply(result))
-            except ai.AIError as e:
+            except ServiceError as e:
                 self.after(0, lambda: self.on_error(str(e)))
-            except Exception as e:  # noqa: BLE001 - surface anything unexpected
-                self.after(0, lambda: self.on_error(f"Unexpected error: {e}"))
         threading.Thread(target=work, daemon=True).start()
 
     def on_error(self, msg: str):
         self.busy = False
         self.send_btn.state(["!disabled"])
-        self.chat.pop()  # let the user retry the same message
         self.say("sys", msg)
 
     def on_reply(self, r: dict):
         self.busy = False
         self.send_btn.state(["!disabled"])
-        self.chat.append({"role": "assistant", "content": r["reply"]})
         self.say("ai", r["reply"])
-        if r["decision"] != "grant" or r["target_kind"] == "none" or not r["target"].strip():
-            return
-        kind = r["target_kind"]
-        target = normalize_domain(r["target"]) if kind == "site" else r["target"].strip()
-        minutes = r["duration_minutes"]
-
-        def grant(s):
-            s["grants"] = [g for g in s["grants"] if not (g["kind"] == kind and g["target"] == target)]
-            s["grants"].append({"id": new_id(), "kind": kind, "target": target,
-                                "purpose": r["purpose"], "granted_at": time.time(),
-                                "expires_at": time.time() + minutes * 60})
-        st = update_state(grant)
-        log(f"granted {kind} {target} for {minutes}m: {r['purpose']}")
-        if kind == "site" and find_item(st["penalties"], "site", target):
-            self.say("sys", f"Note: {target} is still under a distraction block until it expires.")
-        else:
-            self.say("sys", f"Unlocked {target} for {minutes} min. Activity on it is being monitored.")
+        if r.get("note"):
+            self.say("sys", r["note"])
 
 
 # ====================================================================== app shell
@@ -505,7 +521,7 @@ class App(tk.Tk):
         self.minsize(700, 600)
         self.frame = None
         cfg = load_config()
-        if cfg["onboarded"] and (cfg.get("provider") == "ollama" or get_api_key()):
+        if cfg["onboarded"]:
             self.show_main()
         else:
             self.swap(Onboarding)
@@ -517,12 +533,7 @@ class App(tk.Tk):
         self.frame.pack(fill="both", expand=True)
 
     def show_onboarding(self):
-        if load_config()["onboarded"]:
-            if not admin_auth("FocusGuard wants to change which apps and websites are blocked."):
-                messagebox.showinfo("FocusGuard", "Settings weren't opened: an administrator "
-                                    "password is needed to change them.")
-                return
-            log("setup opened (admin approved)")
+        # Anyone may look; saving needs an administrator password (see Onboarding.next).
         self.swap(Onboarding)
 
     def show_main(self):

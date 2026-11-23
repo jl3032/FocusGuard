@@ -10,63 +10,93 @@ A self-control tool for macOS that applies to **one Mac user account only**. Blo
 - **AI watches every page on your work sites.** It reads each page you open (even while you scroll Shorts or Reels) and judges whether it is work. If it is distracting, e.g. gaming videos on YouTube, that whole site is blocked for an hour.
 - **Admin password for changes:** editing setup, or pausing all blocking for 5–240 minutes, needs a Mac administrator's name and password (macOS's own dialog; FocusGuard never sees the password). For this to mean anything, the blocked user should be a *standard* account and the password should belong to someone else, e.g. a parent.
 
-## Why it only affects one user
+## How it's protected
 
-The blocker runs as a **LaunchAgent** in `~/Library/LaunchAgents`, which macOS starts only inside your own login session. Its settings live in `~/Library/Application Support/FocusGuard`. It doesn't touch `/etc/hosts`, the firewall, or anything else system-wide, so a second Mac user is never affected.
+FocusGuard has three parts:
+
+| Part | Runs as | Job |
+|---|---|---|
+| Root service (`/Library/LaunchDaemons/com.focusguard.root.plist`) | root | Makes every decision, holds all settings and state, runs the AI chat. The blocked user can't stop it, edit its files or uninstall it. |
+| Helper (`/Library/LaunchAgents/com.focusguard.agent.plist`) | the blocked user | Tells the root service which app and tab are in front, and quits/redirects what it's told to. If it's killed it is restarted, and meanwhile the root service closes blocked apps and browsers itself. Reports from any other process are ignored. |
+| Window (`/Applications/FocusGuard.app`) | the blocked user | Shows status and the AI chat. Saving settings or pausing needs an administrator's password. |
+
+Files live in `/Library/Application Support/FocusGuard`, owned by root. It only enforces for the user who ran the installer; other users on the Mac aren't affected.
+
+Workarounds it closes:
+- **Killing or unloading it** (Activity Monitor, Terminal, VS Code): the root service restarts the helper and closes browsers until it's back.
+- **Editing its settings** (TextEdit, scripts): the files are root-owned.
+- **Uninstalling, pausing, changing lists**: need an administrator password; the password window says exactly what is being newly allowed.
+- **Renaming a game** to an allowed app's name (`Notes.app`, `Finder.app`): apps are matched by location and bundle ID.
+- **Games run through Python**: "Python" is only allowed when it's FocusGuard's own window.
+- **Turning off the browser permission**: the browser is closed instead of websites going unchecked.
+- **Game sites on hosting platforms** (`*.vercel.app`, `*.github.io`, `sites.google.com`, …): allowing `google.com` or `vercel.app` doesn't cover them; list the exact site.
+- **Talking the AI into it** ("my parent said it's fine"): the AI is told to ignore such claims, and the chat history lives in the root service, so it can't be faked.
+
+For any of this to hold, **the blocked account must be a Standard user** (System Settings → Users & Groups) and the administrator password must belong to someone else.
 
 ## How blocking works
 
 | What | How |
 |---|---|
 | Apps not on your lists (or out of daily time) | Asked to quit as soon as they come to the front (your unsaved work still gets a save prompt) |
-| Websites in Safari, Chrome, Arc, Brave, Edge, Vivaldi | The current tab's URL is read through AppleScript; a blocked tab is sent to a "Stay on task" page |
+| Websites in Safari, Chrome, Arc, Brave, Edge, Vivaldi | The current tab's URL is read through AppleScript; a blocked tab is sent to a "blocked" page |
 | Firefox, Opera, Zen, Orion | Their URLs can't be read, so these apps are always blocked |
+| macOS's own windows (password prompts, permission dialogs) | Never touched |
 
 ## Install (on this Mac or any other)
 
-1. **Download it.** On the GitHub page, click the green **Code** button, then **Download ZIP**. Double-click the zip in Downloads to unpack it. (You can also copy the folder from another Mac by AirDrop or USB stick.)
-2. **Log in as the user who should be blocked**, open the folder, and double-click **`Install FocusGuard.command`**.
-   - If macOS says it "can't be opened", right-click the file, choose **Open**, then click **Open** again.
-3. **Wait for it to finish.** It sets everything up, including the free AI (about a 4.7 GB download the first time), then opens FocusGuard so you can pick your apps and sites.
-4. When macOS asks to let Python control Safari/Chrome or System Events, click **Allow**.
+You need an **administrator's name and password** once during install.
 
-That's it, and you can delete the folder you installed from. Installing applies only to the user who was logged in; to cover another user on the same Mac, log in as them and repeat step 2.
+1. **Download it.** On the GitHub page, click the green **Code** button, then **Download ZIP**. Double-click the zip in Downloads to unpack it.
+2. **Log in as the user who should be blocked.**
+3. **Open Terminal** and run:
+   ```
+   zsh ~/Downloads/FocusGuard-main/install.sh
+   ```
+   (Double-clicking `Install FocusGuard.command` also works, but macOS often refuses to open downloaded `.command` files; the Terminal command avoids that.)
+4. **When the password window appears**, an administrator types their name and password.
+5. **Wait for it to finish.** It sets up the free AI too (about a 4.7 GB download the first time), then opens FocusGuard. Pick the apps and sites, then an administrator approves the settings with their password.
+6. When macOS asks to let python control Safari/Chrome or System Events, click **Allow**.
 
-If double-clicking says you don't have permission, open Terminal and run `zsh ~/Downloads/FocusGuard-main/install.sh` instead.
+Updating works the same way: download the new ZIP and run the installer again. Your settings are kept.
 
-If the Mac has never used Python, a popup asks to install Apple's Command Line Tools. Click **Install**, wait, then double-click `Install FocusGuard.command` again.
+If the Mac has never used Python, a popup asks to install Apple's Command Line Tools. Click **Install**, wait, then run the installer again.
 
-To remove it, double-click **`Uninstall FocusGuard.command`**. That deletes FocusGuard and its settings for that user. Ollama stays installed; drag it from `~/Applications` to the Trash if you don't want it.
+To remove it, double-click **`Uninstall FocusGuard.command`** (or run `zsh ~/Downloads/FocusGuard-main/uninstall.sh`). An administrator's password is needed. Ollama stays installed; drag it to the Trash if you don't want it.
 
 ### Which AI?
 
 | | Free (default) | Claude (optional) |
 |---|---|---|
 | Cost | $0 | Paid per use |
-| Key needed | No | Yes, from console.anthropic.com (stored in Keychain) |
+| Key needed | No | Yes, from console.anthropic.com (stored where only root can read it) |
 | Privacy | Everything stays on your Mac | Page titles/URLs are sent to Anthropic |
-| Needs | Apple Silicon Mac (M1+), ~8 GB free memory, Ollama running | Internet |
+| Needs | Apple Silicon Mac (M1+), ~8 GB free memory, Ollama | Internet |
 | Judgment | Good | Better |
 
-You pick one on the first setup screen. If Ollama isn't running, FocusGuard tells you; open the Ollama app or run `brew services start ollama`.
+If Ollama isn't running, FocusGuard starts it. While the AI can't be reached, unlock requests fail and page checks are skipped.
 
 Permissions macOS will ask for:
-- **Automation:** allow Python to control Safari/Chrome and System Events. Without this, websites can't be checked.
-- **Accessibility (optional):** add `~/Library/Application Support/FocusGuard/venv/bin/python` so FocusGuard can read window titles of unlocked *apps* for the on-task check.
+- **Automation:** allow python to control Safari/Chrome and System Events. Without this, the browser is closed because its websites can't be checked.
+- **Accessibility (optional):** add `/Library/Application Support/FocusGuard/venv/bin/python` so FocusGuard can read window titles of unlocked *apps* for the on-task check.
 
 ## Settings
 
-`~/Library/Application Support/FocusGuard/config.json`:
-`allowed_apps` / `allowed_sites` (work), `limited_apps` / `limited_sites` (`[{"target": "chess.com", "minutes": 10}]`), `max_grant_minutes` (90), `distraction_penalty_minutes` (60), `on_task_check_seconds` (60), `provider` (`ollama` or `anthropic`), `ollama_model` (`qwen2.5:7b`; on a Mac with 16 GB+ memory you can try a bigger model, e.g. `qwen2.5:14b`, after `ollama pull` for it), `claude_model` (`claude-opus-5-5`; `claude-haiku-5-5` is much cheaper). The log is in `activity.log` in the same folder.
+Change them in the app (administrator password needed). They're stored in `/Library/Application Support/FocusGuard/config.json`:
+`allowed_apps` / `allowed_sites` (work), `limited_apps` / `limited_sites` (`[{"target": "chess.com", "minutes": 10}]`), `max_grant_minutes` (90), `distraction_penalty_minutes` (60), `on_task_check_seconds` (60), `provider` (`ollama` or `anthropic`), `ollama_model` (`qwen2.5:7b`), `claude_model` (`claude-opus-5-5`). The log is `activity.log` in the same folder.
 
 ## Files
 
-- `focusguard/daemon.py`: background enforcer (blocks things, counts daily time on limited items, watches unlocks, applies penalties)
-- `focusguard/gui.py`: setup (work + limited lists), time left today, AI chat
-- `focusguard/ai.py`: Claude calls (gatekeeper, on-task check, distraction check)
+- `focusguard/rootd.py`: root service (socket server, AI chat, watchdog)
+- `focusguard/daemon.py`: decision engine (what to block, daily time, unlocks, penalties)
+- `focusguard/agent.py`: user-session helper (reads front app/tab, carries out actions)
+- `focusguard/admin.py`: root-only tool behind the administrator password (settings, pause)
+- `focusguard/gui.py`: setup, time left today, AI chat
+- `focusguard/ai.py`: AI calls (gatekeeper, on-task check, distraction check)
 - `focusguard/macos.py`: `lsappinfo` and `osascript` helpers
-- `focusguard/common.py`: config/state files, Keychain, domain matching
+- `focusguard/common.py`: config/state files, site matching, client for the root service
+- `install.sh` / `install_root.sh`, `uninstall.sh` / `uninstall_root.sh`
 
 ## Limits
 
-This is a self-control tool, not a lock you can't get out of. An admin user can still unload the LaunchAgent with `launchctl` or delete the files. If the AI can't be reached, unlock requests fail and the activity checks are skipped, so blocked things stay blocked.
+Anyone with the administrator password can turn it off. Without it, a determined user could still boot the Mac from another disk or recovery mode, or use a different device.

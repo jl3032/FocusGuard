@@ -1,5 +1,10 @@
-"""Background enforcer. Runs as a per-user LaunchAgent, so it only sees and
-blocks things in the macOS account it was installed in."""
+"""Decision engine. Runs inside the root service (rootd).
+
+It never touches the user's session itself: the user-session helper (agent.py)
+reports what is on screen, and this returns what to do (quit an app, redirect a
+tab, show a notification). Because the decisions and all state live in a root
+process, the blocked user can't switch them off or edit them.
+"""
 from __future__ import annotations
 
 import time
@@ -8,25 +13,27 @@ from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 
 from . import ai
-from .common import (domain_matches, find_item, host_of, limited_items, load_config,
-                     load_state, log, paused, seconds_left, update_state, usage_key)
-from .macos import (ALWAYS_ALLOWED, AutomationDenied, BROWSERS, UNMONITORABLE_BROWSERS, block_page_url,
-                    browser_tab, frontmost_app, notify, quit_app, redirect_tab,
-                    window_title)
+from .common import (find_item, host_of, limited_items, load_config, load_state, log,
+                     match_site, paused, seconds_left, update_state, usage_key)
+from .macos import (BROWSERS, UNMONITORABLE_BROWSERS, FrontApp, always_allowed,
+                    block_page_url, is_system_process)
 
-POLL_SECONDS = 1.0     # how often the front app / tab is checked
 DWELL_SECONDS = 4      # be on a site this long before the AI starts judging its pages
 NOTIFY_COOLDOWN = 20
 MAX_TICK_CREDIT = 5    # seconds counted per tick at most (ignores sleep/wake gaps)
 WARN_AT = (300, 60)    # warn when this many seconds of a daily allowance are left
-
+PYTHON_NAMES = {"Python", "python3", "python", "Python Launcher"}
+# Folders a standard user can't write to: an app there with the right bundle ID is
+# the real thing even if it moved (e.g. after an update).
+PROTECTED_APP_DIRS = ("/Applications/", "/System/Applications/")
 
 
 class Daemon:
-    def __init__(self):
+    def __init__(self, trusted_gui=lambda pid: False):
+        self.trusted_gui = trusted_gui      # pid -> is it FocusGuard's own window?
         self.pool = ThreadPoolExecutor(max_workers=2)
         self.pending = {}                   # key -> (kind, info, future)
-        self.distraction_cache = {}         # (host, title) -> bool
+        self.distraction_cache = {}         # url -> bool
         self.current_host = None            # site the AI is currently watching
         self.host_since = 0.0
         self.samples = defaultdict(lambda: deque(maxlen=12))  # grant id -> activity
@@ -35,22 +42,21 @@ class Daemon:
         self.last_tick = time.time()
         self.warned = set()                 # (day, usage key, threshold)
         self.was_paused = False
+        self.actions = []
+        self.want_titles = set()            # apps whose window title we want next time
 
-    # ------------------------------------------------------------ main loop
-    def run(self):
-        log("daemon started")
-        while True:
-            started = time.time()
-            try:
-                self.tick()
-            except Exception:
-                log("tick error:\n" + traceback.format_exc())
-            took = time.time() - started
-            if took > 2:
-                log(f"slow check: took {took:.1f}s")
-            time.sleep(max(0.2, POLL_SECONDS - took))
+    # ------------------------------------------------------------ entry point
+    def tick(self, obs: dict) -> list:
+        """One check. obs = {"app": {...FrontApp fields} | None, "tab": [url, title] | None,
+        "tab_denied": bool, "title": str, "no_agent": bool}. Returns actions to carry out."""
+        self.actions = []
+        try:
+            self._tick(obs)
+        except Exception:
+            log("check error:\n" + traceback.format_exc())
+        return self.actions
 
-    def tick(self):
+    def _tick(self, obs: dict):
         cfg = load_config()
         if not cfg["onboarded"]:
             return
@@ -65,13 +71,17 @@ class Daemon:
         if self.was_paused:
             self.was_paused = False
             self.pending.clear()
-            notify("FocusGuard", "The pause is over. Blocking is back on.")
+            self.notify("FocusGuard", "The pause is over. Blocking is back on.")
             log("pause ended")
 
-        front = frontmost_app()
-        if not front or front.name in ALWAYS_ALLOWED:
+        if not obs.get("app"):
+            return
+        front = FrontApp(**obs["app"])
+        if is_system_process(front) or always_allowed(front):
             return
         name = front.name
+        if name in PYTHON_NAMES and self.trusted_gui(front.pid):
+            return
 
         if name in UNMONITORABLE_BROWSERS:
             self.block_app(front, f"{name} can't be monitored; use Safari or Chrome")
@@ -80,30 +90,48 @@ class Daemon:
             self.block_app(front, "blocked for distracting use")
             return
         grant = find_item(st["grants"], "app", name)
-        allowed = name.lower() in {a.lower() for a in cfg["allowed_apps"]}
+        allowed = (name.lower() in {a.lower() for a in cfg["allowed_apps"]}
+                   and self.is_real_app(front, cfg))
         if not allowed and not grant:
             limited = find_item(limited_items(cfg), "app", name)
-            if not limited:
+            if not limited or not self.is_real_app(front, cfg):
                 self.block_app(front, "not on your allowed list")
             elif not self.spend(limited, st):
-                self.block_app(front, "today's time is used up; "
-                                      "it unblocks at midnight")
+                self.block_app(front, "today's time is used up; it unblocks at midnight")
             return
         if grant:
-            title = window_title(name)
+            self.want_titles.add(name)
+            title = obs.get("title") or ""
             self.watch_grant(grant, f"App {name}" + (f" — window: {title}" if title else ""), cfg)
         if name in BROWSERS:
-            self.handle_browser(name, cfg, st)
+            self.handle_browser(front, obs, cfg, st)
+
+    def is_real_app(self, front: FrontApp, cfg: dict) -> bool:
+        """Is this the app that was picked in setup, not a renamed copy of something else?"""
+        rec = cfg["app_ids"].get(front.name.lower())
+        if not rec:
+            return True          # typed in by hand: only the name is known
+        if rec.get("path") and front.path == rec["path"]:
+            return True
+        return bool(rec.get("bundle_id") and front.bundle_id == rec["bundle_id"]
+                    and (front.path.startswith(PROTECTED_APP_DIRS)
+                         or "/AppTranslocation/" in front.path))
 
     # ------------------------------------------------------------ browsers
-    def handle_browser(self, app: str, cfg: dict, st: dict):
-        try:
-            tab = browser_tab(app)
-        except AutomationDenied:
+    def handle_browser(self, front: FrontApp, obs: dict, cfg: dict, st: dict):
+        app = front.name
+        if obs.get("no_agent"):
+            # The helper that reads tabs isn't running (was it killed?). Fail closed.
+            self.block_app(front, "FocusGuard can't see its websites right now")
+            return
+        if obs.get("tab_denied"):
             self.no_permission(app)
+            self.block_app(front, "FocusGuard isn't allowed to check its websites. Turn it on "
+                                  "in System Settings > Privacy & Security > Automation")
             return
         if app in st["no_permission"]:
             update_state(lambda s: s["no_permission"].pop(app, None))
+        tab = obs.get("tab")
         if not tab:
             return
         url, title = tab
@@ -120,7 +148,7 @@ class Daemon:
         if grant:
             self.watch_grant(grant, f"{title} — {url}", cfg)
             return
-        allowed_domain = next((d for d in cfg["allowed_sites"] if domain_matches(host, d)), None)
+        allowed_domain = match_site(host, cfg["allowed_sites"])
         if allowed_domain:
             self.check_distraction(app, host, allowed_domain, url, title, cfg)
             return
@@ -162,6 +190,16 @@ class Daemon:
                                               {"domain": allowed_domain, "key": key, "host": host},
                                               fut)
 
+    def no_permission(self, app: str):
+        update_state(lambda s: s["no_permission"].__setitem__(app, time.time()))
+        key = "perm:" + app
+        if time.time() - self.last_notify.get(key, 0) > 300:
+            self.last_notify[key] = time.time()
+            self.notify("FocusGuard can't check websites",
+                        f"Allow it to control {app}: System Settings > Privacy & Security > "
+                        "Automation > python > turn on " + app)
+            log(f"automation permission denied for {app}; closing it until allowed")
+
     # ------------------------------------------------------------ limited items
     def spend(self, item: dict, st: dict) -> bool:
         """Count this tick against a limited item's daily allowance.
@@ -181,8 +219,8 @@ class Daemon:
         if crossed:
             self.warned.update(crossed)
             if left > 0:
-                notify("FocusGuard", f"{item['target']}: {max(1, round(left / 60))} min "
-                                     "left for today.")
+                self.notify("FocusGuard", f"{item['target']}: {max(1, round(left / 60))} min "
+                                          "left for today.")
         if len(self.warned) > 200:
             self.warned = {m for m in self.warned if m[0] == day}
         if left <= 0:
@@ -233,11 +271,15 @@ class Daemon:
                                                "reason": "off task: " + result["reason"]})
                 update_state(revoke)
                 self.samples.pop(g["id"], None)
-                notify("FocusGuard — access revoked", f"{g['target']}: {result['reason']}")
+                self.want_titles.discard(g["target"])
+                self.notify("FocusGuard — access revoked", f"{g['target']}: {result['reason']}")
                 log(f"revoked {g['kind']} {g['target']}: {result['reason']}")
                 # The next tick blocks it because the grant is gone.
 
     # ------------------------------------------------------------ actions
+    def notify(self, title: str, msg: str):
+        self.actions.append({"do": "notify", "title": title, "msg": msg})
+
     def add_penalty(self, domain: str, reason: str, cfg: dict):
         minutes = cfg["distraction_penalty_minutes"]
 
@@ -246,7 +288,7 @@ class Daemon:
                 s["penalties"].append({"kind": "site", "target": domain, "reason": reason,
                                        "until": time.time() + minutes * 60})
         update_state(add)
-        notify("FocusGuard", f"{domain} blocked for {minutes} min: {reason}")
+        self.notify("FocusGuard", f"{domain} blocked for {minutes} min: {reason}")
         log(f"penalty {domain} {minutes}m: {reason}")
 
     def record_block(self, kind: str, target: str, reason: str):
@@ -261,21 +303,18 @@ class Daemon:
     def maybe_notify(self, target: str, msg: str):
         if time.time() - self.last_notify.get(target, 0) > NOTIFY_COOLDOWN:
             self.last_notify[target] = time.time()
-            notify("FocusGuard", msg)
+            self.notify("FocusGuard", msg)
 
-    def block_app(self, front, reason: str):
-        quit_app(front)
+    def block_app(self, front: FrontApp, reason: str):
+        self.actions.append({"do": "quit", "name": front.name, "pid": front.pid,
+                             "bundle_id": front.bundle_id})
         self.record_block("app", front.name, reason)
         self.maybe_notify(front.name, f"{front.name} is blocked ({reason}). "
                                       "Open FocusGuard if you need it.")
         log(f"blocked app {front.name}: {reason}")
 
     def block_site(self, app: str, host: str, reason: str):
-        redirect_tab(app, block_page_url(host, reason))
+        self.actions.append({"do": "redirect", "app": app, "url": block_page_url(host, reason)})
         self.record_block("site", host, reason)
         self.maybe_notify(host, f"{host} is blocked. {reason}")
         log(f"blocked site {host}: {reason}")
-
-
-if __name__ == "__main__":
-    Daemon().run()

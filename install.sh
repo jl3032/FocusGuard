@@ -1,19 +1,22 @@
 #!/bin/zsh
-# Installs FocusGuard for the CURRENT macOS user only. No sudo, no Homebrew needed.
-# Copies itself into ~/Library/Application Support/FocusGuard, so the folder you
-# installed from can be deleted afterwards.
+# Installs FocusGuard. Run it logged in as the user who should be blocked.
+# The protected part (root service, settings, code) is installed system-wide and
+# needs an administrator's password once; it only enforces for this user.
 set -euo pipefail
 
 SRC="${0:A:h}"
-LABEL="com.focusguard.daemon"
-PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
-SUPPORT="$HOME/Library/Application Support/FocusGuard"
-CODE="$SUPPORT/app"
-VENV="$SUPPORT/venv"
-APP="$HOME/Applications/FocusGuard.app"
+TARGET_USER="$(id -un)"
+TARGET_UID="$(id -u)"
 MODEL="qwen2.5:7b"
+OLD_LABEL="com.focusguard.daemon"
+OLD_DIR="$HOME/Library/Application Support/FocusGuard"
 
 say_step() { print -P "\n%B==> $1%b"; }
+
+if [[ "$TARGET_UID" -eq 0 ]]; then
+  echo "Don't run this with sudo. Log in as the user who should be blocked and run it there."
+  exit 1
+fi
 
 # ---------------------------------------------------------------- 1. Python
 say_step "Checking Python"
@@ -26,23 +29,19 @@ done
 if [[ -z "$PY" ]]; then
   echo "Python isn't set up on this Mac yet. A window will pop up asking to install"
   echo "Apple's Command Line Tools: click Install, wait for it to finish,"
-  echo "then double-click 'Install FocusGuard.command' again."
+  echo "then run the installer again."
   xcode-select --install 2>/dev/null || true
   exit 1
 fi
 echo "Using $PY"
 
-# ---------------------------------------------------------------- 2. Copy app + Python packages
-say_step "Installing FocusGuard"
-mkdir -p "$SUPPORT" "$HOME/Library/LaunchAgents" "$HOME/Applications"
-rm -rf "$CODE"
-mkdir -p "$CODE"
-cp -R "$SRC/focusguard" "$SRC/assets" "$SRC/requirements.txt" "$CODE/"
-[[ -x "$VENV/bin/python" ]] || "$PY" -m venv "$VENV"
-"$VENV/bin/pip" install --quiet --upgrade pip >/dev/null 2>&1 || true
-# Only needed if you later choose the optional Claude AI; failure is OK.
-"$VENV/bin/pip" install --quiet -r "$CODE/requirements.txt" || echo "(Optional Claude support not installed; the free AI still works.)"
-VPY="$VENV/bin/python"
+# ---------------------------------------------------------------- 2. Stop the old version
+# The old per-user blocker closed macOS's password windows, so stop it before asking
+# for the administrator password.
+say_step "Stopping the old version (if any)"
+launchctl bootout "gui/$TARGET_UID/$OLD_LABEL" 2>/dev/null || true
+OLD_CONFIG=""
+[[ -f "$OLD_DIR/config.json" ]] && OLD_CONFIG="$OLD_DIR/config.json"
 
 # ---------------------------------------------------------------- 3. Free local AI (Ollama)
 say_step "Setting up the free local AI (Ollama)"
@@ -74,34 +73,29 @@ if [[ -n "$OLLAMA" && -x "$OLLAMA" ]]; then
   "$OLLAMA" pull "$MODEL" || echo "Couldn't download it now; FocusGuard will retry by itself."
 fi
 
-# ---------------------------------------------------------------- 4. Background blocker (this user only)
-say_step "Starting the background blocker"
-cat > "$PLIST" <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key><string>$LABEL</string>
-  <key>ProgramArguments</key>
-  <array><string>$VPY</string><string>-m</string><string>focusguard.daemon</string></array>
-  <key>WorkingDirectory</key><string>$CODE</string>
-  <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
-  <key>LimitLoadToSessionType</key><string>Aqua</string>
-  <key>StandardOutPath</key><string>$SUPPORT/daemon.out.log</string>
-  <key>StandardErrorPath</key><string>$SUPPORT/daemon.err.log</string>
-</dict>
-</plist>
-EOF
-launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
-launchctl bootstrap "gui/$(id -u)" "$PLIST"
+# ---------------------------------------------------------------- 4. Protected part (administrator)
+say_step "Installing the protected part"
+STAGE="$(mktemp -d)"
+cp -R "$SRC/focusguard" "$SRC/assets" "$SRC/launch" "$SRC/requirements.txt" \
+      "$SRC/install_root.sh" "$SRC/uninstall_root.sh" "$STAGE/"
+echo "A macOS password window will appear."
+echo "Enter an ADMINISTRATOR's name and password (e.g. a parent's account)."
+if ! osascript -e "do shell script \"/bin/zsh \" & quoted form of \"$STAGE/install_root.sh\" & \" \" & quoted form of \"$STAGE\" & \" \" & quoted form of \"$TARGET_USER\" & \" $TARGET_UID \" & quoted form of \"$PY\" & \" \" & quoted form of \"$OLD_CONFIG\" with prompt \"FocusGuard needs an administrator to install its protected blocker for $TARGET_USER.\" with administrator privileges"; then
+  echo
+  echo "Not installed: the administrator password was cancelled or wrong."
+  echo "Run the installer again when an administrator can type their password."
+  rm -rf "$STAGE"
+  exit 1
+fi
+rm -rf "$STAGE"
 
-# ---------------------------------------------------------------- 5. App launcher
-rm -rf "$APP"
-osacompile -o "$APP" -e "do shell script \"cd \" & quoted form of \"$CODE\" & \" && \" & quoted form of \"$VPY\" & \" -m focusguard.gui > /dev/null 2>&1 &\""
+# ---------------------------------------------------------------- 5. Remove the old per-user copy
+rm -f "$HOME/Library/LaunchAgents/$OLD_LABEL.plist"
+rm -rf "$HOME/Applications/FocusGuard.app" "$OLD_DIR"
 
 say_step "Done!"
-echo "FocusGuard is installed for $(whoami) only. Opening it now to finish setup."
-echo "If macOS asks to let Python control Safari/Chrome or System Events, click Allow."
+echo "FocusGuard now protects $TARGET_USER. Only an administrator can change its settings,"
+echo "pause it or uninstall it. Opening it now."
+echo "If macOS asks to let python control Chrome/Safari or System Events, click Allow."
 echo "You can delete the folder you installed from."
-open "$APP"
+open "/Applications/FocusGuard.app"
