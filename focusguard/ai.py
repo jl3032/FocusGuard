@@ -14,7 +14,7 @@ import time
 import urllib.error
 import urllib.request
 
-from .common import get_api_key, load_config
+from .common import get_api_key, load_config, log
 
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 
@@ -304,12 +304,42 @@ are not distracting.
 "reason" is one short sentence addressed to the user."""
 
 
+VERIFY_SYSTEM = """You double-check FocusGuard, a focus tool the user installed on their own Mac. \
+A first check flagged the page below as distracting. Small AI models often get this wrong, and \
+a wrong flag blocks a site the user needs, so be strict about keeping it.
+
+Keep distracting=true only if the title and address clearly show entertainment content itself \
+(e.g. a gaming video, a prank, a meme compilation, a celebrity gossip article, a Short watched \
+for fun). Set distracting=false if any of these apply:
+- the reason guesses what the page "might" lead to, or gives general advice or talks about time \
+limits instead of describing this page;
+- the page is a home page, search results, a channel, playlist or navigation page;
+- the title is ambiguous or doesn't say what the content is;
+- the content is educational or informative: talks (TED, TEDx), lectures, tutorials, \
+documentaries, explainers, courses, news analysis, how-tos;
+{extra}
+"reason" is one short sentence addressed to the user."""
+
+VERIFY_LIMITED = ("- the site ({site}) is built for one activity and the page is that activity "
+                  "(e.g. playing chess on chess.com).\n")
+
+
 def check_distraction(url: str, title: str, allowed_sites: list, limited_site: str = "") -> dict:
-    """Judge one page. limited_site set -> page is on a daily-allowance site, not a work site."""
+    """Judge one page. limited_site set -> page is on a daily-allowance site, not a work site.
+    A "distracting" verdict is double-checked before it counts."""
     msg = (f"Time: {time.strftime('%A %H:%M')}\n"
            f"User's work sites: {', '.join(allowed_sites)}\n"
            f"Current page URL: {url}\nCurrent page title: {title}")
     system = LIMITED_SYSTEM.format(site=limited_site) if limited_site else DISTRACTION_SYSTEM
     r = _json_call(system, [{"role": "user", "content": msg}],
                    DISTRACTION_SCHEMA, max_tokens=3000)
-    return {"distracting": bool(r.get("distracting", False)), "reason": r.get("reason", "")}
+    if not r.get("distracting"):
+        return {"distracting": False, "reason": r.get("reason", "")}
+    extra = VERIFY_LIMITED.format(site=limited_site) if limited_site else ""
+    v = _json_call(VERIFY_SYSTEM.format(extra=extra),
+                   [{"role": "user", "content": msg + f"\nFirst check's reason: {r.get('reason', '')}"}],
+                   DISTRACTION_SCHEMA, max_tokens=3000)
+    if not v.get("distracting"):
+        log(f"second check overruled a distraction flag on {title[:80]!r}: {r.get('reason', '')}")
+        return {"distracting": False, "reason": v.get("reason", "")}
+    return {"distracting": True, "reason": v.get("reason") or r.get("reason", "")}

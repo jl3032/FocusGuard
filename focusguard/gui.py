@@ -171,8 +171,8 @@ class Onboarding(ttk.Frame):
         self.heading("Which websites do you use for work?",
                      "These always work; other sites are blocked (you can give some a daily time "
                      "allowance on the next step). Allowed sites are still watched: if you start "
-                     "doing something distracting on one (e.g. gaming videos on YouTube), that site "
-                     "is blocked for an hour. Subdomains are included automatically, except on hosting "
+                     "doing something distracting on one (e.g. gaming videos on YouTube), that page "
+                     "is blocked; do it twice and the site is blocked for an hour. Subdomains are included automatically, except on hosting "
                      "platforms (vercel.app, github.io, sites.google.com…), where you list the exact "
                      "site, e.g. myproject.vercel.app.")
         grid = ttk.Frame(self.body)

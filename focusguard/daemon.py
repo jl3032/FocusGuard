@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import time
 import traceback
+from urllib.parse import urlparse
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 
@@ -21,6 +22,7 @@ from .macos import (BROWSERS, UNMONITORABLE_BROWSERS, FrontApp, always_allowed,
 DWELL_SECONDS = 4      # be on a site this long before the AI starts judging its pages
 SETTLE_CHECKS = 2      # see the same address + title this many checks in a row before judging
                        # (YouTube changes the address before the title catches up)
+STRIKE_WINDOW = 30 * 60   # a 2nd distracting page on a site within this long blocks the whole site
 NOTIFY_COOLDOWN = 20
 MAX_TICK_CREDIT = 5    # seconds counted per tick at most (ignores sleep/wake gaps)
 WARN_AT = (300, 60)    # warn when this many seconds of a daily allowance are left
@@ -39,6 +41,7 @@ class Daemon:
         self.current_host = None            # site the AI is currently watching
         self.host_since = 0.0
         self.page = ("", "", 0)             # (url, title, checks seen in a row)
+        self.strikes = defaultdict(list)    # site -> times a page on it was judged distracting
         self.samples = defaultdict(lambda: deque(maxlen=12))  # grant id -> activity
         self.last_check = {}                # grant id -> ts
         self.last_notify = {}
@@ -163,23 +166,26 @@ class Daemon:
                 self.block_site(app, host, "Today's time on this site is used up. "
                                            "It unblocks at midnight.")
                 return
-            self.check_distraction(app, host, limited["target"], url, title, cfg, limited=True)
-            if find_item(load_state()["penalties"], "site", host):
+            if self.check_distraction(app, host, limited["target"], url, title, cfg, limited=True):
                 return   # judged distracting; the tab was redirected
             self.spend(limited, st)
             return
         self.block_site(app, host, "Not on your allowed list. Open FocusGuard and tell it why you need this.")
 
-    def check_distraction(self, app, host, allowed_domain, url, title, cfg, limited=False):
-        """Have the AI judge every page on a work or limited site; block the site if it's
-        distracting. On limited sites the AI judges by what the site is for."""
+    def check_distraction(self, app, host, allowed_domain, url, title, cfg, limited=False) -> bool:
+        """Have the AI judge every page on a work or limited site. A distracting page is
+        blocked; a second one on the same site soon after blocks the whole site.
+        On limited sites the AI judges by what the site is for. Returns True if blocked."""
+        if is_navigation_page(url):
+            return False   # home and search pages: judge what the user opens from them
         key = (url[:400], title[:200])
         cached = self.distraction_cache.get(key)
         if cached is not None:
-            if cached:   # came back to a page already judged distracting
-                self.add_penalty(allowed_domain, f'You went back to a distracting page ("{title[:80]}").', cfg)
-                self.block_site(app, host, "Distracting content — site blocked for an hour.")
-            return
+            if cached:   # a page already judged distracting
+                self.block_site(app, host, f'This page looks distracting ("{title[:80]}"). '
+                                           "Another distracting page here will block the whole "
+                                           "site for a while.")
+            return bool(cached)
         now = time.time()
         # The wait is per site, not per page, so fast scrolling (Shorts, Reels)
         # can't dodge the check by changing page every few seconds.
@@ -188,15 +194,16 @@ class Daemon:
         seen = self.page[2] + 1 if (url, title) == self.page[:2] else 1
         self.page = (url, title, seen)
         if now - self.host_since < DWELL_SECONDS or seen < SETTLE_CHECKS:
-            return   # also wait until the title matches the page
+            return False   # also wait until the title matches the page
         if any(k == "distraction" and i["host"] == host for k, i, _ in self.pending.values()):
-            return   # one check per site at a time; the next page is judged when it's done
+            return False   # one check per site at a time; the next page is judged when it's done
         fut = self.pool.submit(ai.check_distraction, url, title, cfg["allowed_sites"],
                                allowed_domain if limited else "")
         self.pending[("distraction", key)] = ("distraction",
                                               {"domain": allowed_domain, "key": key, "host": host,
                                                "title": title},
                                               fut)
+        return False
 
     def no_permission(self, app: str):
         update_state(lambda s: s["no_permission"].__setitem__(app, time.time()))
@@ -266,9 +273,18 @@ class Daemon:
                     self.distraction_cache.clear()
                 self.distraction_cache[info["key"]] = result["distracting"]
                 if result["distracting"]:
-                    self.add_penalty(info["domain"],
-                                     f'{result["reason"]} (page: "{info["title"][:80]}")', cfg)
-                    # The next tick sees the penalty and redirects the tab.
+                    reason = f'{result["reason"]} (page: "{info["title"][:80]}")'
+                    domain, now = info["domain"], time.time()
+                    self.strikes[domain] = [t for t in self.strikes[domain]
+                                            if now - t < STRIKE_WINDOW] + [now]
+                    if len(self.strikes[domain]) >= 2:
+                        self.strikes.pop(domain)
+                        self.add_penalty(domain, reason, cfg)
+                    else:
+                        self.notify("FocusGuard — warning", f"Blocked one page: {reason} "
+                                    f"Another distracting page will block {domain} for a while.")
+                        log(f"warning on {domain}: {reason}")
+                    # The next tick sees the verdict (or penalty) and redirects the tab.
 
             elif kind == "grant" and not result["on_task"]:
                 g = info["grant"]
@@ -327,3 +343,15 @@ class Daemon:
         self.record_block("site", host, reason)
         self.maybe_notify(host, f"{host} is blocked. {reason}")
         log(f"blocked site {host}: {reason}")
+
+
+SEARCH_SEGMENTS = {"search", "results"}
+NAV_PATHS = {"/feed/subscriptions", "/feed/you", "/feed/history", "/feed/library", "/feed/playlists"}
+
+
+def is_navigation_page(url: str) -> bool:
+    """A site's home page or search results. Nothing is being watched or read there yet,
+    and the AI kept guessing what they "might lead to"."""
+    path = urlparse(url).path.rstrip("/").lower()
+    return (path == "" or path in NAV_PATHS
+            or any(seg in SEARCH_SEGMENTS for seg in path.split("/")))
