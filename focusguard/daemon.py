@@ -14,7 +14,7 @@ from .macos import (ALWAYS_ALLOWED, AutomationDenied, BROWSERS, UNMONITORABLE_BR
                     browser_tab, frontmost_app, notify, quit_app, redirect_tab,
                     window_title)
 
-POLL_SECONDS = 2.5
+POLL_SECONDS = 1.0     # how often the front app / tab is checked
 DWELL_SECONDS = 8      # stay on a page this long before the AI judges it
 NOTIFY_COOLDOWN = 20
 MAX_TICK_CREDIT = 5    # seconds counted per tick at most (ignores sleep/wake gaps)
@@ -44,11 +44,15 @@ class Daemon:
     def run(self):
         log("daemon started")
         while True:
+            started = time.time()
             try:
                 self.tick()
             except Exception:
                 log("tick error:\n" + traceback.format_exc())
-            time.sleep(POLL_SECONDS)
+            took = time.time() - started
+            if took > 2:
+                log(f"slow check: took {took:.1f}s")
+            time.sleep(max(0.2, POLL_SECONDS - took))
 
     def tick(self):
         cfg = load_config()

@@ -5,11 +5,12 @@ import os
 import re
 import signal
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlencode
 
-from .common import BLOCK_PAGE
+from .common import BLOCK_PAGE, log
 
 SAFARI_LIKE = {"Safari", "Safari Technology Preview"}
 CHROME_LIKE = {"Google Chrome", "Google Chrome Canary", "Brave Browser",
@@ -45,11 +46,16 @@ def _q(s: str) -> str:
 
 
 def osa(script: str, timeout: float = 5) -> str:
+    started = time.time()
     try:
         r = subprocess.run(["osascript", "-e", script],
                            capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired as e:
+        log(f"AppleScript gave up after {timeout}s: {script[:70]}")
         raise OSAError("osascript timed out") from e
+    took = time.time() - started
+    if took > 1:
+        log(f"slow AppleScript ({took:.1f}s): {script[:70]}")
     if r.returncode != 0:
         raise OSAError(r.stderr.strip())
     return r.stdout.rstrip("\n")
@@ -105,7 +111,7 @@ def browser_tab(app_name: str):
     else:
         return None
     try:
-        out = osa(script)
+        out = osa(script, timeout=3)
     except OSAError as e:
         msg = str(e)
         if "-1743" in msg or "Not authorized" in msg or "not allowed" in msg.lower():
