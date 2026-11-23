@@ -117,14 +117,20 @@ class Daemon:
             return
         limited = find_item(limited_items(cfg), "site", host)
         if limited:
-            if not self.spend(limited, st):
+            if seconds_left(limited, st) <= 0:
                 self.block_site(app, host, "Today's time on this site is used up. "
                                            "It unblocks at midnight.")
+                return
+            self.check_distraction(app, host, limited["target"], url, title, cfg, limited=True)
+            if find_item(load_state()["penalties"], "site", host):
+                return   # judged distracting; the tab was redirected
+            self.spend(limited, st)
             return
         self.block_site(app, host, "Not on your allowed list. Open FocusGuard and tell it why you need this.")
 
-    def check_distraction(self, app, host, allowed_domain, url, title, cfg):
-        """Have the AI judge every page on a work site; block the site if it's distracting."""
+    def check_distraction(self, app, host, allowed_domain, url, title, cfg, limited=False):
+        """Have the AI judge every page on a work or limited site; block the site if it's
+        distracting. On limited sites the AI judges by what the site is for."""
         key = url[:400]
         cached = self.distraction_cache.get(key)
         if cached is not None:
@@ -141,7 +147,8 @@ class Daemon:
             return
         if any(k == "distraction" and i["host"] == host for k, i, _ in self.pending.values()):
             return   # one check per site at a time; the next page is judged when it's done
-        fut = self.pool.submit(ai.check_distraction, url, title, cfg["allowed_sites"])
+        fut = self.pool.submit(ai.check_distraction, url, title, cfg["allowed_sites"],
+                               allowed_domain if limited else "")
         self.pending[("distraction", key)] = ("distraction",
                                               {"domain": allowed_domain, "key": key, "host": host},
                                               fut)

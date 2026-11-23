@@ -3,7 +3,7 @@
 A self-control tool for macOS that applies to **one Mac user account only**. Blocking is always on; there are no sessions to start.
 
 - **Work apps and sites:** you pick the apps and websites you use for work. They always work.
-- **Limited apps and sites:** you pick a few you're allowed for a set time each day, e.g. chess.com for 10 minutes. Time only counts while it's on screen; you get a warning at 5 and 1 minutes left, then it's blocked until midnight.
+- **Limited apps and sites:** you pick a few you're allowed for a set time each day, e.g. chess.com for 10 minutes. Time only counts while it's on screen; you get a warning at 5 and 1 minutes left, then it's blocked until midnight. The AI also judges limited sites by what they're for: playing chess on chess.com is fine, but on a general site like YouTube only learning content is (gaming videos or Shorts scrolling get it blocked for an hour).
 - **Everything else is blocked**, e.g. ea.com when only chess.com is on your limited list.
 - **Built-in AI gatekeeper:** open FocusGuard and tell the AI why you need something that's blocked. If your reason is specific and real, it unlocks the app or site for a limited time and writes down what you said you'd do there.
 - **Monitoring after an unlock:** about every 60 seconds the AI compares your recent pages or window titles with that stated purpose. If you're off task, access is taken away and the item is blocked again.

@@ -272,10 +272,30 @@ reference, documentation, email, tools, search pages and anything ambiguous are 
 "reason" is one short sentence addressed to the user."""
 
 
-def check_distraction(url: str, title: str, allowed_sites: list) -> dict:
+LIMITED_SYSTEM = """You help FocusGuard, a focus tool the user installed on their own Mac. \
+The user is on a website they are allowed to use for a few minutes a day ({site}). First \
+decide what kind of site it is, then judge only the page shown:
+
+- Single-purpose sites built for one activity (e.g. chess.com for chess, duolingo.com for \
+languages, a typing-practice site): using the site for that activity is fine, even though it \
+is fun. distracting=true only if the page is something unrelated (e.g. chess.com's \
+celebrity-drama articles while the user is supposed to be playing chess).
+- General-purpose sites with every kind of content (e.g. youtube.com, reddit.com, \
+news sites, social media): the user allows these to learn. Learning, tutorials, lectures, \
+documentaries, how-tos and educational explainers are fine. distracting=true for \
+entertainment: gaming videos, short-video feeds watched for fun, memes, pranks, vlogs, gossip, \
+music videos for zoning out and similar. The home page, search results and ambiguous titles \
+are not distracting.
+
+"reason" is one short sentence addressed to the user."""
+
+
+def check_distraction(url: str, title: str, allowed_sites: list, limited_site: str = "") -> dict:
+    """Judge one page. limited_site set -> page is on a daily-allowance site, not a work site."""
     msg = (f"Time: {time.strftime('%A %H:%M')}\n"
-           f"User's allowed sites: {', '.join(allowed_sites)}\n"
+           f"User's work sites: {', '.join(allowed_sites)}\n"
            f"Current page URL: {url}\nCurrent page title: {title}")
-    r = _json_call(DISTRACTION_SYSTEM, [{"role": "user", "content": msg}],
+    system = LIMITED_SYSTEM.format(site=limited_site) if limited_site else DISTRACTION_SYSTEM
+    r = _json_call(system, [{"role": "user", "content": msg}],
                    DISTRACTION_SCHEMA, max_tokens=3000)
     return {"distracting": bool(r.get("distracting", False)), "reason": r.get("reason", "")}
