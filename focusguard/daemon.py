@@ -122,6 +122,10 @@ class Daemon:
             return
         limited = find_item(limited_items(cfg), "site", host)
         if limited:
+            if any(p in url.lower() for p in QUICK_DISTRACTIONS):
+                self.block_site(app, host, "Shorts, Reels and similar endless feeds are always "
+                                           "blocked. Regular videos/pages still work.")
+                return
             if not self.spend(limited, st):
                 self.block_site(app, host, "Today's time on this site is used up. "
                                            "It unblocks at midnight.")
