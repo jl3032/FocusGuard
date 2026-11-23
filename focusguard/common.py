@@ -50,6 +50,7 @@ DEFAULT_STATE = {
     "penalties": [],      # 1-hour distraction blocks
     "recent_blocks": [],  # what was blocked lately (gives the AI context)
     "usage": {"day": "", "seconds": {}},  # time spent today on limited items
+    "paused_until": 0,    # blocking is off until this time (needs an admin password)
     "no_permission": {},  # browser -> last time macOS refused to let us read its tabs
 }
 
@@ -115,6 +116,10 @@ def update_state(fn) -> dict:
         fn(st)
         _write(STATE_PATH, st)
         return st
+
+
+def paused(st: dict) -> bool:
+    return st.get("paused_until", 0) > time.time()
 
 
 def today() -> str:

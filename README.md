@@ -8,7 +8,7 @@ A self-control tool for macOS that applies to **one Mac user account only**. Blo
 - **Built-in AI gatekeeper:** open FocusGuard and tell the AI why you need something that's blocked. If your reason is specific and real, it unlocks the app or site for a limited time and writes down what you said you'd do there.
 - **Monitoring after an unlock:** about every 60 seconds the AI compares your recent pages or window titles with that stated purpose. If you're off task, access is taken away and the item is blocked again.
 - **AI watches every page on your work sites.** It reads each page you open (even while you scroll Shorts or Reels) and judges whether it is work. If it is distracting, e.g. gaming videos on YouTube, that whole site is blocked for an hour.
-- **Changing your lists** needs you to type a confirmation sentence, so it isn't a one-click escape.
+- **Admin password for changes:** editing setup, or pausing all blocking for 5–240 minutes, needs a Mac administrator's name and password (macOS's own dialog; FocusGuard never sees the password). For this to mean anything, the blocked user should be a *standard* account and the password should belong to someone else, e.g. a parent.
 
 ## Why it only affects one user
 

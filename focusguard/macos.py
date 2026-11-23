@@ -151,6 +151,19 @@ def quit_app(app: FrontApp) -> None:
                 pass
 
 
+def admin_auth(reason: str) -> bool:
+    """Show macOS's own administrator password dialog. True only if an admin name and
+    password were entered correctly. FocusGuard never sees the password."""
+    script = ('do shell script "/usr/bin/true" with prompt '
+              f'{_q(reason)} with administrator privileges')
+    try:
+        r = subprocess.run(["osascript", "-e", script], capture_output=True, text=True,
+                           timeout=300)
+    except subprocess.TimeoutExpired:
+        return False
+    return r.returncode == 0
+
+
 def notify(title: str, message: str) -> None:
     try:
         osa(f"display notification {_q(message)} with title {_q(title)}", timeout=3)

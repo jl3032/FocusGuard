@@ -9,9 +9,9 @@ from tkinter import messagebox, simpledialog, ttk
 
 from . import ai
 from .common import (find_item, get_api_key, limited_items, load_config, load_state, log,
-                     new_id, normalize_domain, save_config, seconds_left, set_api_key,
+                     new_id, normalize_domain, paused, save_config, seconds_left, set_api_key,
                      update_state)
-from .macos import BROWSERS, UNMONITORABLE_BROWSERS, list_installed_apps
+from .macos import BROWSERS, UNMONITORABLE_BROWSERS, admin_auth, list_installed_apps
 
 COMMON_SITES = [
     "google.com", "docs.google.com", "drive.google.com", "mail.google.com",
@@ -19,7 +19,6 @@ COMMON_SITES = [
     "claude.ai", "notion.so", "canva.com", "office.com", "outlook.com",
     "slack.com", "zoom.us", "khanacademy.org", "youtube.com", "reddit.com",
 ]
-EDIT_PHRASE = "I want to change what is blocked"
 
 
 def fmt_minutes(seconds: float) -> str:
@@ -62,6 +61,8 @@ class Onboarding(ttk.Frame):
         nav.pack(fill="x", pady=(12, 0))
         self.back_btn = ttk.Button(nav, text="Back", command=self.back)
         self.back_btn.pack(side="left")
+        if self.cfg["onboarded"]:
+            ttk.Button(nav, text="Cancel", command=app.show_main).pack(side="left", padx=6)
         self.next_btn = ttk.Button(nav, text="Next", command=self.next)
         self.next_btn.pack(side="right")
         self.render()
@@ -297,6 +298,9 @@ class Main(ttk.Frame):
         self.status.pack(side="left")
         self.setup_btn = ttk.Button(top, text="Edit setup", command=app.show_onboarding)
         self.setup_btn.pack(side="right")
+        self.pause_btn = ttk.Button(top, text="Pause blocking…", command=self.pause)
+        self.pause_btn.pack(side="right", padx=6)
+        self.resume_btn = ttk.Button(top, text="Resume now", command=self.resume)
 
         self.perm_bar = ttk.Frame(self)
         self.perm_label = ttk.Label(self.perm_bar, foreground="#c0392b", wraplength=560,
@@ -346,7 +350,17 @@ class Main(ttk.Frame):
     def refresh(self):
         cfg, st = load_config(), load_state()
         now = time.time()
-        self.status.config(text="Blocking is on", foreground="#2a7")
+        if paused(st):
+            self.status.config(text=f"Paused — {fmt_minutes(st['paused_until'] - now + 59)} left",
+                               foreground="#c77c02")
+            self.pause_btn.pack_forget()
+            if not self.resume_btn.winfo_manager():
+                self.resume_btn.pack(side="right", padx=6)
+        else:
+            self.status.config(text="Blocking is on", foreground="#2a7")
+            self.resume_btn.pack_forget()
+            if not self.pause_btn.winfo_manager():
+                self.pause_btn.pack(side="right", padx=6, after=self.setup_btn)
         denied = sorted(st["no_permission"])
         if denied:
             self.perm_label.config(text=f"Websites are NOT being blocked in {', '.join(denied)}: "
@@ -379,6 +393,25 @@ class Main(ttk.Frame):
             ago = int((now - b["at"]) // 60)
             self.blocks_box.insert("end", f"{b['target']} ({ago}m ago) — {b['reason']}")
         self.after(2000, self.refresh)
+
+    def pause(self):
+        minutes = simpledialog.askinteger(
+            "Pause blocking", "Turn off all blocking for how many minutes? (5–240)\n\n"
+            "An administrator password is needed.", parent=self,
+            minvalue=5, maxvalue=240, initialvalue=30)
+        if not minutes:
+            return
+        if not admin_auth(f"FocusGuard wants to pause all blocking for {minutes} minutes."):
+            self.say("sys", "Pause cancelled: no administrator password.")
+            return
+        update_state(lambda s: s.update(paused_until=time.time() + minutes * 60))
+        log(f"blocking paused for {minutes}m (admin approved)")
+        self.say("sys", f"Blocking is paused for {minutes} minutes. It turns back on by itself.")
+
+    def resume(self):
+        update_state(lambda s: s.update(paused_until=0))
+        log("pause ended early by user")
+        self.say("sys", "Blocking is back on.")
 
     # -------------------------------------------------- chat
     def say(self, who: str, text: str):
@@ -485,16 +518,11 @@ class App(tk.Tk):
 
     def show_onboarding(self):
         if load_config()["onboarded"]:
-            typed = simpledialog.askstring(
-                "Edit setup",
-                f"Changing your lists changes what gets blocked.\nTo continue, type exactly:\n\n{EDIT_PHRASE}",
-                parent=self)
-            if typed is None:
+            if not admin_auth("FocusGuard wants to change which apps and websites are blocked."):
+                messagebox.showinfo("FocusGuard", "Settings weren't opened: an administrator "
+                                    "password is needed to change them.")
                 return
-            if typed.strip() != EDIT_PHRASE:
-                messagebox.showinfo("FocusGuard", "That didn't match. Your setup is unchanged.")
-                return
-            log("user opened setup to edit lists")
+            log("setup opened (admin approved)")
         self.swap(Onboarding)
 
     def show_main(self):

@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from . import ai
 from .common import (domain_matches, find_item, host_of, limited_items, load_config,
-                     load_state, log, seconds_left, update_state, usage_key)
+                     load_state, log, paused, seconds_left, update_state, usage_key)
 from .macos import (ALWAYS_ALLOWED, AutomationDenied, BROWSERS, UNMONITORABLE_BROWSERS, block_page_url,
                     browser_tab, frontmost_app, notify, quit_app, redirect_tab,
                     window_title)
@@ -34,6 +34,7 @@ class Daemon:
         self.last_notify = {}
         self.last_tick = time.time()
         self.warned = set()                 # (day, usage key, threshold)
+        self.was_paused = False
 
     # ------------------------------------------------------------ main loop
     def run(self):
@@ -58,6 +59,14 @@ class Daemon:
         self.last_tick = now
         self.collect_ai_results(cfg)
         st = load_state()
+        if paused(st):
+            self.was_paused = True
+            return               # no blocking, no AI checks, limited time doesn't count
+        if self.was_paused:
+            self.was_paused = False
+            self.pending.clear()
+            notify("FocusGuard", "The pause is over. Blocking is back on.")
+            log("pause ended")
 
         front = frontmost_app()
         if not front or front.name in ALWAYS_ALLOWED:
