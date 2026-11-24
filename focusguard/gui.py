@@ -10,7 +10,9 @@ import time
 import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
 
-from .common import (ServiceError, api_key_saved, limited_items,
+from .common import (DAY_NAMES, DAYS, DINNER_MINUTES, TASK_MAX_LINKS, TASK_MAX_MINUTES, mode,
+                     today,
+                     ServiceError, api_key_saved, limited_items,
                      load_config, load_state, normalize_domain, paused, request, seconds_left)
 from .ai import MODEL_SIZES, auto_size
 from .macos import BROWSERS, UNMONITORABLE_BROWSERS, hardware, installed_apps, run_admin
@@ -370,8 +372,20 @@ class Main(ttk.Frame):
                        ["open", "x-apple.systempreferences:com.apple.preference.security"
                                 "?Privacy_Automation"])).pack(side="right")
         self.perm_shown = False
-        ttk.Label(self, text="Work apps and sites always work. Everything else is blocked.",
-                  foreground="#555").pack(anchor="w", pady=(2, 8))
+        self.mode_detail = ttk.Label(self, text="", foreground="#555", wraplength=760)
+        self.mode_detail.pack(anchor="w", pady=(2, 4))
+        bar = ttk.Frame(self)
+        bar.pack(fill="x", pady=(0, 8))
+        self.clock_btn = ttk.Button(bar, text="Clock in now", command=lambda: self.op("clock_in"))
+        self.dinner_btn = ttk.Button(bar, text=f"Dinner break ({DINNER_MINUTES} min)",
+                                     command=lambda: self.op("dinner"))
+        self.dinner_end_btn = ttk.Button(bar, text="End dinner break",
+                                         command=lambda: self.op("dinner_end"))
+        self.task_btn = ttk.Button(bar, text="Start a task…", command=self.start_task)
+        self.task_end_btn = ttk.Button(bar, text="End task", command=lambda: self.op("task_end"))
+        self.mode_buttons = [self.clock_btn, self.dinner_btn, self.dinner_end_btn,
+                             self.task_btn, self.task_end_btn]
+        ttk.Button(bar, text="Clock-in times…", command=self.edit_times).pack(side="right")
         ttk.Label(self, text="Limited for today (resets at midnight)").pack(anchor="w")
         self.limited_box = tk.Listbox(self, height=4)
         self.limited_box.pack(fill="x", pady=(0, 8))
@@ -408,7 +422,9 @@ class Main(ttk.Frame):
         self.update_btn = ttk.Button(foot, text="Check for updates", command=self.check_updates)
         self.update_btn.pack(side="right")
 
-        self.say("sys", 'Example: "I need youtube.com to watch the biology lecture my teacher assigned."')
+        self.say("sys", 'Need a couple of specific sites for homework? "Start a task…" is quicker. '
+                        'Or ask here, e.g. "I need youtube.com to watch the biology lecture my '
+                        'teacher assigned."')
         self.refresh()
 
     # -------------------------------------------------- status
@@ -425,15 +441,15 @@ class Main(ttk.Frame):
             self.status.config(text="FocusGuard's service isn't running — reinstall it",
                                foreground="#c0392b")
         else:
-            self.status.config(text="Blocking is on", foreground="#2a7")
             self.resume_btn.pack_forget()
             if not self.pause_btn.winfo_manager():
                 self.pause_btn.pack(side="right", padx=6, after=self.setup_btn)
+        self.show_mode(cfg, st, now)
         denied = sorted(st["no_permission"])
         if denied:
-            self.perm_label.config(text=f"{', '.join(denied)} keeps being closed: macOS hasn't "
-                                        "allowed FocusGuard to check its websites. Turn on "
-                                        "python → " + ", ".join(denied) + " under Automation.")
+            self.perm_label.config(text=f"FocusGuard can't check websites in {', '.join(denied)}: "
+                                        "macOS hasn't allowed it. Turn on python → "
+                                        + ", ".join(denied) + " under Automation.")
             if not self.perm_shown:
                 self.perm_bar.pack(fill="x", pady=(4, 4), after=self.status.master)
                 self.perm_shown = True
@@ -464,6 +480,121 @@ class Main(ttk.Frame):
                                   if self.version else "")
         self.after(2000, self.refresh)
         threading.Thread(target=self.check_service, daemon=True).start()
+
+    def show_mode(self, cfg, st, now):
+        m = mode(cfg, st, now)
+        at = lambda t: time.strftime("%H:%M", time.localtime(t))   # noqa: E731
+        show = []
+        if m["name"] == "paused":
+            detail = "An administrator paused all blocking."
+        elif m["name"] == "school":
+            if self.service_ok:
+                self.status.config(text=f"School time — nothing blocked until {at(m['until'])}",
+                                   foreground="#2a7")
+            detail = ("Nothing is blocked and the AI is off. Home rules start by themselves at "
+                      "the clock-in time, or press Clock in now when you get home.")
+            show = [self.clock_btn]
+        elif m["name"] == "dinner":
+            if self.service_ok:
+                self.status.config(text=f"Dinner break — until {at(m['until'])}",
+                                   foreground="#2a7")
+            detail = "Nothing is blocked. Home rules come back by themselves after the break."
+            show = [self.dinner_end_btn]
+        else:
+            task = m["task"]
+            if self.service_ok:
+                self.status.config(text=(f"Task until {at(task['until'])}: {task['purpose']}"
+                                         if task else "Home — blocking is on"),
+                                   foreground="#2a7")
+            detail = ("Work apps and sites always work. Everything else is blocked."
+                      + (f" Never blocked during this task: {', '.join(task['links'])}."
+                         if task else ""))
+            show = [self.task_end_btn if task else self.task_btn]
+            if st.get("dinner_day") != today():
+                show.append(self.dinner_btn)
+        self.mode_detail.config(text=detail)
+        for b in self.mode_buttons:
+            if b in show and not b.winfo_manager():
+                b.pack(side="left", padx=(0, 6))
+            elif b not in show and b.winfo_manager():
+                b.pack_forget()
+
+    def op(self, name: str, **payload):
+        try:
+            request(name, **payload)
+            return True
+        except ServiceError as e:
+            messagebox.showinfo("FocusGuard", str(e), parent=self)
+            return False
+
+    def start_task(self):
+        win = tk.Toplevel(self)
+        win.title("Start a task")
+        win.transient(self)
+        frm = ttk.Frame(win, padding=16)
+        frm.pack(fill="both", expand=True)
+        ttk.Label(frm, text="What are you working on?").pack(anchor="w")
+        purpose = ttk.Entry(frm, width=50)
+        purpose.pack(anchor="w", fill="x", pady=(0, 8))
+        ttk.Label(frm, text=f"Links you need (up to {TASK_MAX_LINKS}). They won't be blocked "
+                            "at all during the task.\nA site (docs.google.com) or a full link "
+                            "to one page.", wraplength=420).pack(anchor="w")
+        links = [ttk.Entry(frm, width=50) for _ in range(TASK_MAX_LINKS)]
+        for e in links:
+            e.pack(anchor="w", fill="x", pady=2)
+        row = ttk.Frame(frm)
+        row.pack(anchor="w", pady=(8, 0))
+        ttk.Label(row, text=f"For how many minutes? (up to {TASK_MAX_MINUTES})").pack(side="left")
+        minutes = tk.IntVar(value=60)
+        ttk.Spinbox(row, from_=5, to=TASK_MAX_MINUTES, increment=5, width=5,
+                    textvariable=minutes).pack(side="left", padx=6)
+
+        def go():
+            try:
+                mins = int(minutes.get())
+            except (tk.TclError, ValueError):
+                mins = 0
+            if self.op("task_start", purpose=purpose.get(), minutes=mins,
+                       links=[e.get() for e in links if e.get().strip()]):
+                win.destroy()
+        btns = ttk.Frame(frm)
+        btns.pack(fill="x", pady=(12, 0))
+        ttk.Button(btns, text="Start", command=go).pack(side="right")
+        ttk.Button(btns, text="Cancel", command=win.destroy).pack(side="right", padx=6)
+        purpose.focus_set()
+
+    def edit_times(self):
+        cfg = load_config()
+        win = tk.Toplevel(self)
+        win.title("Clock-in times")
+        win.transient(self)
+        frm = ttk.Frame(win, padding=16)
+        frm.pack(fill="both", expand=True)
+        ttk.Label(frm, text="From midnight until the clock-in time it's school time: nothing "
+                            "is blocked. At the clock-in time home rules start.",
+                  wraplength=380).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+        entries = {}
+        for i, (d, name) in enumerate(zip(DAYS, DAY_NAMES), start=1):
+            ttk.Label(frm, text=name).grid(row=i, column=0, sticky="w")
+            e = ttk.Entry(frm, width=8)
+            e.insert(0, cfg["clock_in"].get(d, "16:00"))
+            e.grid(row=i, column=1, sticky="w", pady=1)
+            entries[d] = e
+        ttk.Label(frm, text=f'Password of the Mac account "{cfg["user"]}":').grid(
+            row=9, column=0, columnspan=2, sticky="w", pady=(10, 0))
+        pw = ttk.Entry(frm, show="•", width=30)
+        pw.grid(row=10, column=0, columnspan=2, sticky="w")
+
+        def save():
+            ok = self.op("set_schedule", password=pw.get(),
+                         times={d: e.get() for d, e in entries.items()})
+            pw.delete(0, "end")
+            if ok:
+                win.destroy()
+        btns = ttk.Frame(frm)
+        btns.grid(row=11, column=0, columnspan=2, sticky="e", pady=(12, 0))
+        ttk.Button(btns, text="Cancel", command=win.destroy).pack(side="left", padx=6)
+        ttk.Button(btns, text="Save", command=save).pack(side="left")
 
     def check_service(self):
         try:
@@ -531,11 +662,11 @@ class Main(ttk.Frame):
         sent = self.chat_count = getattr(self, "chat_count", 0) + 1
         self.after(20000, lambda: self.busy and self.chat_count == sent and self.say(
             "sys", "Still thinking. The free AI can be slow when it's just starting up; "
-                   "it gives up after about 90 seconds."))
+                   "it gives up after a minute."))
 
         def work():
             try:
-                result = request("chat", text=text, timeout=240)
+                result = request("chat", text=text, timeout=75)
                 self.after(0, lambda: self.on_reply(result))
             except ServiceError as e:
                 self.after(0, lambda: self.on_error(str(e)))

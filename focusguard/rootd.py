@@ -20,15 +20,20 @@ import time
 import traceback
 from dataclasses import asdict
 
-from . import ai, updater
-from .common import (AGENT_LABEL, AGENT_PLIST, GUI_SCRIPT, SOCKET_PATH, find_item,
-                     limited_items, load_config, load_state, log, new_id, normalize_domain,
-                     seconds_left, site_covers, update_state)
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeout
+
+from . import ai, auth, updater
+from .common import (AGENT_LABEL, AGENT_PLIST, DAYS, DINNER_MINUTES, GUI_SCRIPT, SOCKET_PATH,
+                     TASK_MAX_LINKS, TASK_MAX_MINUTES, find_item, limited_items, load_config,
+                     load_state, log, mode, new_id, normalize_domain, parse_hhmm, save_config,
+                     seconds_left, site_covers, today, update_state)
 from .daemon import Daemon
 from .macos import frontmost_app, kill_pid, notify, user_prefix
 
 SOL_LOCAL, LOCAL_PEERPID = 0, 0x002          # from <sys/un.h>
 TESTING = os.environ.get("FOCUSGUARD_TEST") == "1"
+CHAT_DEADLINE = 60           # the chat answers (or says it can't) within this many seconds
 AGENT_QUIET_RESTART = 6      # seconds without a helper report before restarting it
 AGENT_QUIET_ENFORCE = 25     # ... before the root service enforces by itself
                              # (launchd brings a killed helper back within a few seconds)
@@ -57,6 +62,8 @@ class RootService:
         self.last_agent = time.time()
         self.last_restart = 0.0
         self.agent_cache = (0, 0.0)            # (pid, checked_at)
+        self.chat_pool = ThreadPoolExecutor(max_workers=2)
+        self.pw_failures = []                  # times of wrong account passwords
 
     # ------------------------------------------------------------ who is talking to us
     @staticmethod
@@ -147,6 +154,8 @@ class RootService:
             update_state(lambda s: s.update(paused_until=0))
             log("pause ended early by user")
             return {"ok": True}
+        if op in ("clock_in", "dinner", "dinner_end", "task_start", "task_end", "set_schedule"):
+            return self.schedule_op(op, req, cfg)
         if op == "warm":
             threading.Thread(target=ai.warm_up, daemon=True).start()
             return {"ok": True}
@@ -156,6 +165,75 @@ class RootService:
             with self.update_lock:
                 return {"message": updater.check_and_apply()}
         return {"error": "Unknown request."}
+
+    # ------------------------------------------------------------ schedule
+    def schedule_op(self, op: str, req: dict, cfg: dict) -> dict:
+        st, now = load_state(), time.time()
+        m = mode(cfg, st, now)
+        if op == "clock_in":
+            if m["name"] != "school":
+                return {"error": "You're already clocked in."}
+            update_state(lambda s: s.update(clocked_in_day=today()))
+            log("clocked in early")
+            return {"ok": True}
+        if op == "dinner":
+            if m["name"] == "dinner":
+                return {"error": "You're already on your dinner break."}
+            if m["name"] != "home":
+                return {"error": "The dinner break is for after you've clocked in."}
+            if st.get("dinner_day") == today():
+                return {"error": "You've already had today's dinner break."}
+            update_state(lambda s: s.update(dinner_day=today(),
+                                            dinner_until=now + DINNER_MINUTES * 60))
+            log("dinner break started")
+            return {"ok": True}
+        if op == "dinner_end":
+            update_state(lambda s: s.update(dinner_until=0))
+            log("dinner break ended early")
+            return {"ok": True}
+        if op == "task_end":
+            update_state(lambda s: s.update(task=None))
+            return {"ok": True}
+        if op == "task_start":
+            purpose = str(req.get("purpose", "")).strip()[:200]
+            links = [str(x).strip()[:500] for x in req.get("links", []) if str(x).strip()]
+            try:
+                minutes = int(req.get("minutes", 0))
+            except (TypeError, ValueError):
+                minutes = 0
+            if not purpose:
+                return {"error": "Say what you're working on."}
+            if not 1 <= len(links) <= TASK_MAX_LINKS:
+                return {"error": f"Give 1 or {TASK_MAX_LINKS} links."}
+            if any(not normalize_domain(x) or "." not in normalize_domain(x) for x in links):
+                return {"error": "Each link should be a website address, e.g. docs.google.com."}
+            if not 1 <= minutes <= TASK_MAX_MINUTES:
+                return {"error": f"A task period can be 1 to {TASK_MAX_MINUTES} minutes."}
+            task = {"purpose": purpose, "links": links, "started": now,
+                    "until": now + minutes * 60}
+            update_state(lambda s: s.update(task=task))
+            log(f"task period {minutes}m: {purpose} — {', '.join(links)}")
+            return {"ok": True}
+        # set_schedule: needs the account password of the user FocusGuard is for
+        self.pw_failures = [t for t in self.pw_failures if now - t < 300]
+        if len(self.pw_failures) >= 5:
+            return {"error": "Too many wrong passwords. Try again in a few minutes."}
+        if not auth.check_password(cfg["user"], str(req.get("password", ""))):
+            self.pw_failures.append(now)
+            log("clock-in times not changed: wrong account password")
+            return {"error": f"That isn't the password of the Mac account \"{cfg['user']}\"."}
+        times = req.get("times") or {}
+        clean = {}
+        for d in DAYS:
+            hm = parse_hhmm(times.get(d, ""))
+            if not hm:
+                return {"error": "Use times like 16:00 for every day."}
+            clean[d] = f"{hm[0]:02d}:{hm[1]:02d}"
+        new_cfg = load_config()
+        new_cfg["clock_in"] = clean
+        save_config(new_cfg)
+        log("clock-in times changed: " + ", ".join(f"{d} {t}" for d, t in clean.items()))
+        return {"ok": True}
 
     # ------------------------------------------------------------ AI unblock chat
     def context(self) -> str:
@@ -187,8 +265,19 @@ class RootService:
             while self.chat and self.chat[0]["role"] != "user":
                 self.chat = self.chat[1:]
             ai.chat_active.set()
+            started = time.time()
             try:
-                r = ai.gatekeeper(list(self.chat), self.context())
+                # Hard deadline for the whole answer, however the AI gets stuck (starting
+                # up, loading the model, waiting behind a page check).
+                fut = self.chat_pool.submit(ai.gatekeeper, list(self.chat), self.context())
+                r = fut.result(timeout=CHAT_DEADLINE)
+                log(f"chat answered in {time.time() - started:.0f}s")
+            except FutureTimeout:
+                self.chat.pop()
+                log(f"chat gave up after {CHAT_DEADLINE}s")
+                return {"error": "The AI didn't answer within a minute. It may still be "
+                                 "starting up or too slow on this Mac. Try again, or use a "
+                                 "task period for the links you need."}
             except ai.AIError as e:
                 self.chat.pop()
                 return {"error": str(e)}

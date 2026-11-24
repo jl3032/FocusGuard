@@ -15,7 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from . import ai
 from .common import (find_item, host_of, limited_items, load_config, load_state, log,
-                     match_site, paused, seconds_left, update_state, usage_key)
+                     match_site, mode, seconds_left, task_allows, update_state, usage_key)
 from .macos import (BROWSERS, UNMONITORABLE_BROWSERS, FrontApp, always_allowed,
                     block_page_url, hardware, is_system_process)
 
@@ -52,7 +52,8 @@ class Daemon:
         self.last_notify = {}
         self.last_tick = time.time()
         self.warned = set()                 # (day, usage key, threshold)
-        self.was_paused = False
+        self.mode = None                    # last rules in force (to announce changes)
+        self.task_seen = None               # last task period (to announce its end)
         self.actions = []
         self.want_titles = set()            # apps whose window title we want next time
         self.want_screen = False            # ask the helper for a screenshot next time
@@ -66,6 +67,7 @@ class Daemon:
         """One check. obs = {"app": {...FrontApp fields} | None, "tab": [url, title] | None,
         "tab_denied": bool, "title": str, "no_agent": bool}. Returns actions to carry out."""
         self.actions = []
+        self.task = None
         self.obs, self.want_screen = obs, False
         try:
             self._tick(obs)
@@ -80,16 +82,13 @@ class Daemon:
         now = time.time()
         self.elapsed = min(max(0.0, now - self.last_tick), MAX_TICK_CREDIT)
         self.last_tick = now
-        self.collect_ai_results(cfg)
         st = load_state()
-        if paused(st):
-            self.was_paused = True
-            return               # no blocking, no AI checks, limited time doesn't count
-        if self.was_paused:
-            self.was_paused = False
-            self.pending.clear()
-            self.notify("FocusGuard", "The pause is over. Blocking is back on.")
-            log("pause ended")
+        m = mode(cfg, st, now)
+        self.announce(m)
+        if m["name"] != "home":
+            return   # school / dinner / paused: nothing blocked, no AI, limited time not counted
+        self.collect_ai_results(cfg)
+        self.task = m["task"]
 
         if not obs.get("app"):
             return
@@ -122,6 +121,31 @@ class Daemon:
             self.watch_grant(grant, f"App {name}" + (f" — window: {title}" if title else ""), cfg)
         if name in BROWSERS:
             self.handle_browser(front, obs, cfg, st)
+
+    def announce(self, m: dict):
+        """Tell the user when the rules change (clock-in time, end of dinner, etc.)."""
+        task = m.get("task")
+        if self.task_seen and (not task or task["started"] != self.task_seen["started"]):
+            self.notify("FocusGuard", "Your task period is over. Normal rules are back.")
+            log(f"task period ended: {self.task_seen['purpose']}")
+        self.task_seen = task
+        if m["name"] == self.mode:
+            return
+        before, self.mode = self.mode, m["name"]
+        if m["name"] != "home":
+            self.pending.clear()   # verdicts from before don't count during a break
+        if before is None:
+            return                 # just started: nothing changed
+        until = time.strftime("%H:%M", time.localtime(m.get("until") or 0))
+        msg = {"home": {"school": "Clocked in. Home rules are on.",
+                        "dinner": "Dinner break is over. Home rules are back on.",
+                        "paused": "The pause is over. Blocking is back on."}.get(
+                            before, "Home rules are on."),
+               "school": f"School time: nothing is blocked until {until}.",
+               "dinner": f"Dinner break: nothing is blocked until {until}.",
+               "paused": f"Blocking is paused until {until}."}[m["name"]]
+        self.notify("FocusGuard", msg)
+        log(f"rules: {before} -> {m['name']}")
 
     def is_real_app(self, front: FrontApp, cfg: dict) -> bool:
         """Is this the app that was picked in setup, not a renamed copy of something else?"""
@@ -164,6 +188,8 @@ class Daemon:
         if not host or host in ("localhost", "127.0.0.1"):
             return
 
+        if task_allows(self.task, url):
+            return   # one of the task period's links: never blocked or judged
         penalty = find_item(st["penalties"], "site", host)
         grant = find_item(st["grants"], "site", host)
         # An unlock the AI gave after the block (an appeal: "that was a TED talk") wins.

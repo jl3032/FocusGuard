@@ -353,7 +353,7 @@ Current situation:
 def gatekeeper(chat: list, context: str) -> dict:
     cfg = load_config()
     system = GATEKEEPER_SYSTEM.format(max_minutes=cfg["max_grant_minutes"], context=context)
-    result = _json_call(system, chat, GATEKEEPER_SCHEMA, effort="medium", timeout=90)
+    result = _json_call(system, chat, GATEKEEPER_SCHEMA, effort="medium", timeout=55)
     result.pop("thinking", None)
     for k, v in (("reply", "Sorry, I didn't catch that. Can you say it again?"),
                  ("decision", "ask"), ("target_kind", "none"), ("target", ""),

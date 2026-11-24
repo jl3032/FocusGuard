@@ -37,8 +37,18 @@ AGENT_LABEL = "com.focusguard.agent"
 ROOT_LABEL = "com.focusguard.root"
 AGENT_PLIST = Path("/Library/LaunchAgents") / f"{AGENT_LABEL}.plist"
 
+DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+DINNER_MINUTES = 30      # one dinner break a day, nothing blocked
+TASK_MAX_MINUTES = 120   # a task period: up to 2 links are never blocked
+TASK_MAX_LINKS = 2
+
 DEFAULT_CONFIG = {
     "onboarded": False,
+    # The day starts in school time (nothing blocked, AI off) at midnight. Home rules (the
+    # normal blocking) start at the day's clock-in time, or earlier if he clocks in.
+    # Changing these needs the user's own Mac account password, not an admin's.
+    "clock_in": {**{d: "16:00" for d in DAYS[:5]}, "sat": "09:00", "sun": "09:00"},
     "user": "",                  # the one Mac user FocusGuard enforces for
     "uid": 0,
     # Work items: always allowed.
@@ -75,6 +85,10 @@ DEFAULT_STATE = {
     "paused_until": 0,    # blocking is off until this time (needs an admin password)
     "no_permission": {},  # browser -> last time macOS refused to let us read its tabs
     "agent_seen": 0,      # last time the user-session helper checked in
+    "clocked_in_day": "",  # date he clocked in early (home rules from then on)
+    "dinner_day": "",      # date the day's dinner break was used
+    "dinner_until": 0,
+    "task": None,          # {"purpose", "links": [...], "started", "until"}
 }
 
 
@@ -112,6 +126,8 @@ def _prune(st: dict) -> dict:
     st["recent_blocks"] = st["recent_blocks"][-15:]
     st["no_permission"] = {k: t for k, t in st["no_permission"].items() if now - t < 30}
     st.pop("session", None)   # left over from the old focus-session version
+    if st.get("task") and st["task"]["until"] <= now:
+        st["task"] = None
     if st["usage"].get("day") != today():
         st["usage"] = {"day": today(), "seconds": {}}
     return st
@@ -147,6 +163,67 @@ def paused(st: dict) -> bool:
 
 def today() -> str:
     return time.strftime("%Y-%m-%d")
+
+
+def parse_hhmm(text: str):
+    """'16:00' / '4:30' -> (16, 0), or None."""
+    try:
+        h, m = (int(x) for x in str(text).strip().split(":"))
+    except ValueError:
+        return None
+    return (h, m) if 0 <= h <= 23 and 0 <= m <= 59 else None
+
+
+def clock_in_at(cfg: dict, when: float = None) -> float:
+    """Timestamp of the clock-in time on the day of `when`."""
+    lt = time.localtime(when or time.time())
+    hm = parse_hhmm(cfg.get("clock_in", {}).get(DAYS[lt.tm_wday], "")) or (16, 0)
+    return time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, hm[0], hm[1], 0, 0, 0, -1))
+
+
+def mode(cfg: dict, st: dict, now: float = None) -> dict:
+    """Which rules apply right now:
+    paused (admin pause) / school (before clock-in: nothing blocked, AI off) /
+    dinner (30-min break: nothing blocked) / home (the normal blocking, maybe with a task)."""
+    now = now or time.time()
+    if st.get("paused_until", 0) > now:
+        return {"name": "paused", "until": st["paused_until"]}
+    start = clock_in_at(cfg, now)
+    if now < start and st.get("clocked_in_day") != today():
+        return {"name": "school", "until": start}
+    if st.get("dinner_until", 0) > now:
+        return {"name": "dinner", "until": st["dinner_until"]}
+    task = st.get("task")
+    return {"name": "home", "until": 0, "task": task if task and task["until"] > now else None}
+
+
+def task_allows(task, url: str) -> bool:
+    """Is this page one of the task period's links? A bare site ("docs.google.com") allows
+    the whole site; a full link allows that page and pages under it."""
+    if not task:
+        return False
+    try:
+        page = urlparse(url)
+    except ValueError:
+        return False
+    host = (page.hostname or "").lower()
+    host = host[4:] if host.startswith("www.") else host
+    for link in task.get("links", []):
+        lk = urlparse(link if "://" in link else "https://" + link)
+        lhost = (lk.hostname or "").lower()
+        lhost = lhost[4:] if lhost.startswith("www.") else lhost
+        if not lhost or not domain_matches(host, lhost):
+            continue
+        lpath = lk.path.rstrip("/")
+        if lpath and not (page.path == lpath or page.path.startswith(lpath + "/")):
+            continue
+        # e.g. youtube.com/watch?v=abc: the video id has to match too
+        lq = dict(p.split("=", 1) for p in lk.query.split("&") if "=" in p)
+        pq = dict(p.split("=", 1) for p in page.query.split("&") if "=" in p)
+        if any(pq.get(k) != lq[k] for k in ("v", "id", "list") if k in lq):
+            continue
+        return True
+    return False
 
 
 def usage_key(kind: str, target: str) -> str:

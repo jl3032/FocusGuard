@@ -101,6 +101,21 @@ Change them in the app (administrator password needed). They're stored in `/Libr
 
 Anyone with the administrator password can turn it off. Without it, a determined user could still boot the Mac from another disk or recovery mode, or use a different device.
 
+## Daily schedule
+
+| When | What applies |
+|---|---|
+| Midnight until the day's clock-in time | **School time:** nothing is blocked and the AI is off. |
+| From the clock-in time (or earlier with **Clock in now**) until midnight | **Home rules:** the normal blocking described above. |
+| **Dinner break** (once a day, at home) | 30 minutes with nothing blocked, then home rules come back by themselves. |
+| **Task** (at home, up to 2 hours) | Type what you're working on and up to 2 links. Those links are never blocked or judged during the task; everything else follows home rules. |
+
+Each day of the week has its own clock-in time (**Clock-in times…** in the main window). Changing them needs the password of the Mac account FocusGuard is set up for, not an administrator password. Home rules start by themselves at the clock-in time.
+
+A task link can be a whole site (`docs.google.com`) or one page (`youtube.com/watch?v=…` allows just that video).
+
+The AI chat gives up after a minute if the AI doesn't answer.
+
 ## The AI reads the screen
 
 On work and limited sites the AI judges each page by its title, and also looks at a screenshot: when a page opens, and every 45 seconds while it stays open (every 2 minutes on Intel Macs, where it's slower). So a game on a site called "Math Practice" is still caught. Screenshots are judged by the free AI on the Mac and never saved or sent anywhere.
