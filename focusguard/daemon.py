@@ -59,8 +59,9 @@ class Daemon:
         self.want_screen = False            # ask the helper for a screenshot next time
         self.screen_seen = {}               # page key -> when the AI last looked at it
         self.obs = {}
-        self.screen_every = (SCREEN_EVERY_APPLE if hardware()["apple_silicon"]
-                             else SCREEN_EVERY_INTEL)
+        self.screen_base = (SCREEN_EVERY_APPLE if hardware()["apple_silicon"]
+                            else SCREEN_EVERY_INTEL)
+        self.screen_every = self.screen_base
 
     # ------------------------------------------------------------ entry point
     def tick(self, obs: dict) -> list:
@@ -280,7 +281,7 @@ class Daemon:
         self.screen_seen[key] = time.time()
         if len(self.screen_seen) > 500:
             self.screen_seen = {key: time.time()}
-        fut = self.pool.submit(ai.check_screen, shot, url, title, domain if limited else "")
+        fut = self.pool.submit(timed, ai.check_screen, shot, url, title, domain if limited else "")
         self.pending[("screen", key)] = ("screen", {"domain": domain, "key": key, "host": host,
                                                     "title": title}, fut)
 
@@ -341,6 +342,10 @@ class Daemon:
             kind, info, fut = self.pending.pop(key)
             try:
                 result = fut.result()
+                if kind == "screen":
+                    result, took = result
+                    # Leave the AI free most of the time: wait 3x as long as a look takes.
+                    self.screen_every = min(600, max(self.screen_base, 3 * took))
             except ai.AIError as e:
                 log(f"AI check skipped ({kind}): {e}")
                 continue
@@ -455,3 +460,9 @@ def is_navigation_page(url: str) -> bool:
     path = urlparse(url).path.rstrip("/").lower()
     return (path == "" or path in NAV_PATHS
             or any(seg in SEARCH_SEGMENTS for seg in path.split("/")))
+
+
+def timed(fn, *args):
+    """(fn(*args), seconds it took)"""
+    started = time.time()
+    return fn(*args), time.time() - started

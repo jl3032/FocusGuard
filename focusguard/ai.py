@@ -6,8 +6,10 @@ Two providers:
 """
 from __future__ import annotations
 
+import http.client
 import json
 import os
+import socket
 import subprocess
 import threading
 import time
@@ -37,9 +39,11 @@ def _json_call(system: str, messages: list, schema: dict, effort: str = "low",
         return _claude_call(cfg, system, messages, schema, effort, max_tokens)
     if not _take_turn(priority, wait=timeout):
         raise AIError("The free AI is busy with other checks. Try again in a moment.")
+    _current.update(priority=priority, interrupted=False)
     try:
         return _ollama_call(cfg, system, messages, schema, timeout, kind)
     finally:
+        _current.update(conn=None, priority=False)
         _ollama_lock.release()
 
 
@@ -194,11 +198,27 @@ _priority_lock = threading.Lock()
 _priority_waiting = [0]
 
 
+_current = {"conn": None, "priority": False, "interrupted": False}   # request in progress
+
+
+def _interrupt_background():
+    """The user is waiting (chat / task check): drop the background check Ollama is busy
+    with. Ollama stops working on a request as soon as it's dropped; the check runs later."""
+    conn = _current["conn"]
+    if conn is not None and not _current["priority"] and conn.sock is not None:
+        _current["interrupted"] = True
+        try:
+            conn.sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
+
 def _take_turn(priority: bool, wait: float) -> bool:
     deadline = time.time() + wait
     if priority:
         with _priority_lock:
             _priority_waiting[0] += 1
+        _interrupt_background()
     try:
         while time.time() < deadline:
             if (priority or not _priority_waiting[0]) and _ollama_lock.acquire(timeout=0.2):
@@ -243,26 +263,38 @@ def _ollama_call(cfg: dict, system: str, messages: list, schema: dict, timeout: 
         "keep_alive": KEEP_LOADED,
         "options": OLLAMA_OPTIONS,
     }).encode()
-    req = urllib.request.Request(base + "/api/chat", data=body,
-                                 headers={"Content-Type": "application/json"})
+    from urllib.parse import urlparse
+    u = urlparse(base)
+    # http.client (not urlopen) so a chat message can drop this request mid-way.
+    conn = http.client.HTTPConnection(u.hostname or "127.0.0.1", u.port or 80, timeout=timeout)
+    _current["conn"] = conn
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read())
-    except urllib.error.HTTPError as e:
-        detail = e.read().decode(errors="replace")
-        if e.code == 404 or "not found" in detail:
-            global _installed
-            _installed = (0.0, [])
-            _start_model_download(base, model)
-            raise AIError(f"Downloading the free AI model ({model}) now. "
-                          "Try again in a few minutes.") from e
-        raise AIError(f"Ollama error {e.code}: {detail[:200]}") from e
-    except OSError as e:   # includes timeouts (socket.timeout on older Pythons)
-        if "timed out" in str(e) or isinstance(e, TimeoutError) or "timed out" in str(getattr(e, "reason", "")):
+        conn.request("POST", "/api/chat", body, {"Content-Type": "application/json"})
+        resp = conn.getresponse()
+        status, raw = resp.status, resp.read()
+    except (OSError, http.client.HTTPException) as e:   # includes timeouts
+        if _current["interrupted"]:
+            raise AIError("Paused so the AI could answer the chat first.") from e
+        if "timed out" in str(e) or isinstance(e, TimeoutError):
             raise AIError("The free AI took too long to answer (it may still be starting up). "
                           "Try again in a moment.") from e
         raise AIError("Couldn't reach the free AI app (Ollama). Make sure it's open, "
                       "then try again.") from e
+    finally:
+        conn.close()
+    if status != 200:
+        detail = raw.decode(errors="replace")
+        if status == 404 or "not found" in detail:
+            global _installed
+            _installed = (0.0, [])
+            _start_model_download(base, model)
+            raise AIError(f"Downloading the free AI model ({model}) now. "
+                          "Try again in a few minutes.")
+        raise AIError(f"Ollama error {status}: {detail[:200]}")
+    try:
+        data = json.loads(raw)
+    except ValueError as e:
+        raise AIError("The local AI returned malformed output. Try again.") from e
     if data.get("done_reason") == "length":
         raise AIError("The free AI's answer got cut off. Try again.")
     text = (data.get("message") or {}).get("content", "")
