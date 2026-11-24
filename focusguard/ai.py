@@ -168,7 +168,11 @@ def _start_model_download(base: str, model: str) -> None:
     threading.Thread(target=pull, daemon=True).start()
 
 
-KEEP_LOADED = "30m"   # keep the model in memory between checks; loading it takes a while
+KEEP_LOADED = "30m"
+# The same for every request: Ollama reloads the whole model whenever num_ctx changes.
+# num_ctx: Ollama's default window is small and silently cuts off the start of long prompts
+# (our rules). num_predict: stop a runaway answer instead of hanging.
+OLLAMA_OPTIONS = {"temperature": 0.1, "num_ctx": 8192, "num_predict": 700}   # keep the model in memory between checks; loading it takes a while
 
 
 def warm_up() -> None:
@@ -181,7 +185,8 @@ def warm_up() -> None:
         _ensure_ollama_running(base, cfg)
         req = urllib.request.Request(
             base + "/api/generate", headers={"Content-Type": "application/json"},
-            data=json.dumps({"model": _model_to_use(base, cfg), "keep_alive": KEEP_LOADED}).encode())
+            data=json.dumps({"model": _model_to_use(base, cfg), "keep_alive": KEEP_LOADED,
+                             "options": OLLAMA_OPTIONS}).encode())
         with urllib.request.urlopen(req, timeout=120) as r:
             r.read()
         if wanted_model(cfg, "vision") != wanted_model(cfg):
@@ -201,9 +206,7 @@ def _ollama_call(cfg: dict, system: str, messages: list, schema: dict, timeout: 
         "format": schema,          # Ollama structured outputs: reply must match the schema
         "stream": False,
         "keep_alive": KEEP_LOADED,
-        # num_ctx: Ollama's default window is small and silently cuts off the start of
-        # long prompts (our rules). num_predict: stop a runaway answer instead of hanging.
-        "options": {"temperature": 0.1, "num_ctx": 8192, "num_predict": 700},
+        "options": OLLAMA_OPTIONS,
     }).encode()
     req = urllib.request.Request(base + "/api/chat", data=body,
                                  headers={"Content-Type": "application/json"})
