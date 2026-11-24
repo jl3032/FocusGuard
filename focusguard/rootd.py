@@ -25,12 +25,14 @@ from .common import (AGENT_LABEL, AGENT_PLIST, GUI_SCRIPT, SOCKET_PATH, find_ite
                      limited_items, load_config, load_state, log, new_id, normalize_domain,
                      seconds_left, site_covers, update_state)
 from .daemon import Daemon
-from .macos import frontmost_app, kill_pid, notify, user_prefix
+from .macos import BROWSERS, frontmost_app, kill_pid, notify, user_prefix
 
 SOL_LOCAL, LOCAL_PEERPID = 0, 0x002          # from <sys/un.h>
 TESTING = os.environ.get("FOCUSGUARD_TEST") == "1"
 AGENT_QUIET_RESTART = 6      # seconds without a helper report before restarting it
-AGENT_QUIET_ENFORCE = 12     # ... before the root service enforces by itself
+AGENT_QUIET_ENFORCE = 25     # ... before the root service enforces by itself
+                             # (launchd brings a killed helper back within a few seconds)
+SLEPT_GAP = 10               # a watchdog pause this long means the Mac was asleep
 
 
 def run(cmd: list, timeout: float = 5) -> subprocess.CompletedProcess:
@@ -248,6 +250,9 @@ class RootService:
         """The helper is gone: check the front app ourselves and close what's blocked.
         Browsers are closed too, because their tabs can't be checked without the helper."""
         front = frontmost_app(prefix=("launchctl", "asuser", str(cfg["uid"])))
+        if front and front.name in BROWSERS:
+            log(f"closing {front.name}: the helper that reads tabs has been silent "
+                f"{int(time.time() - self.last_agent)}s")
         obs = {"app": asdict(front) if front else None, "no_agent": True}
         with self.lock:
             actions = self.policy.tick(obs)
@@ -258,8 +263,16 @@ class RootService:
                 notify(a["title"], a["msg"], prefix=user_prefix(cfg))
 
     def watchdog(self):
+        last_loop = time.time()
         while True:
             time.sleep(2)
+            now = time.time()
+            if now - last_loop > SLEPT_GAP:
+                # The Mac was asleep: the helper was paused too, not killed. Give it a
+                # fresh start instead of closing the browser the moment the lid opens.
+                self.last_agent = now
+                log(f"Mac woke up after {int(now - last_loop)}s; waiting for the helper")
+            last_loop = now
             try:
                 cfg = load_config()
                 if not cfg["onboarded"] or not cfg["uid"]:

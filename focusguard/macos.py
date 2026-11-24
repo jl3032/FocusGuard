@@ -144,7 +144,9 @@ def browser_tab(app_name: str):
         out = osa(script, timeout=3)
     except OSAError as e:
         msg = str(e)
-        if "-1743" in msg or "Not authorized" in msg or "not allowed" in msg.lower():
+        # Only macOS's own "not permitted to control this app" errors count; other
+        # AppleScript errors (Chrome busy or starting up) just mean "no tab this time".
+        if "-1743" in msg or "Not authorized to send Apple events" in msg:
             raise AutomationDenied(app_name) from e
         return None
     if not out:

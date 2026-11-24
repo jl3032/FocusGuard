@@ -24,6 +24,7 @@ SETTLE_CHECKS = 2      # see the same address + title this many checks in a row 
                        # (YouTube changes the address before the title catches up)
 STRIKE_WINDOW = 30 * 60   # a 2nd distracting page on a site within this long blocks the whole site
 NOTIFY_COOLDOWN = 20
+DENIED_GRACE = 10      # seconds a browser must keep refusing before FocusGuard closes it
 # How often the AI looks at the screen while a page stays open (a page can turn into a game
 # without its address or title changing). Looking at a picture is slow on Intel Macs.
 SCREEN_EVERY_APPLE, SCREEN_EVERY_INTEL = 45, 120
@@ -56,6 +57,7 @@ class Daemon:
         self.actions = []
         self.want_titles = set()            # apps whose window title we want next time
         self.want_screen = False            # ask the helper for a screenshot next time
+        self.denied_since = {}              # browser -> when it started refusing us
         self.screen_seen = {}               # page key -> when the AI last looked at it
         self.obs = {}
         self.screen_every = (SCREEN_EVERY_APPLE if hardware()["apple_silicon"]
@@ -142,10 +144,15 @@ class Daemon:
             self.block_app(front, "FocusGuard can't see its websites right now")
             return
         if obs.get("tab_denied"):
+            # Fail closed (otherwise turning the permission off would open every site),
+            # but not on a single hiccup: warn first, close only if it keeps refusing.
+            since = self.denied_since.setdefault(app, time.time())
             self.no_permission(app)
-            self.block_app(front, "FocusGuard isn't allowed to check its websites. Turn it on "
-                                  "in System Settings > Privacy & Security > Automation")
+            if time.time() - since >= DENIED_GRACE:
+                self.block_app(front, "FocusGuard isn't allowed to check its websites. Turn it "
+                                      "on in System Settings > Privacy & Security > Automation")
             return
+        self.denied_since.pop(app, None)
         if app in st["no_permission"]:
             update_state(lambda s: s["no_permission"].pop(app, None))
         if obs.get("screen_denied") and time.time() - self.last_notify.get("perm:screen", 0) > 600:
@@ -264,7 +271,8 @@ class Daemon:
             self.notify("FocusGuard can't check websites",
                         f"Allow it to control {app}: System Settings > Privacy & Security > "
                         "Automation > python > turn on " + app)
-            log(f"automation permission denied for {app}; closing it until allowed")
+            log(f"automation permission denied for {app}; closing it in {DENIED_GRACE}s "
+                "unless allowed")
 
     # ------------------------------------------------------------ limited items
     def spend(self, item: dict, st: dict) -> bool:
