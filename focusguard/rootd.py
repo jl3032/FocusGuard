@@ -5,7 +5,7 @@
   verified by process ID against launchd.
 - Runs the AI unblock chat, so grants can only come from the AI's decision.
 - Watchdog: if the helper is killed or unloaded, restarts it and, meanwhile,
-  enforces by itself (closes blocked apps and browsers, since it can't see tabs).
+  enforces by itself (closes blocked apps; allowed browsers stay open).
 """
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ from .common import (AGENT_LABEL, AGENT_PLIST, GUI_SCRIPT, SOCKET_PATH, find_ite
                      limited_items, load_config, load_state, log, new_id, normalize_domain,
                      seconds_left, site_covers, update_state)
 from .daemon import Daemon
-from .macos import BROWSERS, frontmost_app, kill_pid, notify, user_prefix
+from .macos import frontmost_app, kill_pid, notify, user_prefix
 
 SOL_LOCAL, LOCAL_PEERPID = 0, 0x002          # from <sys/un.h>
 TESTING = os.environ.get("FOCUSGUARD_TEST") == "1"
@@ -247,12 +247,9 @@ class RootService:
         log("FocusGuard's helper wasn't checking in; restarted it")
 
     def enforce_without_agent(self, cfg: dict):
-        """The helper is gone: check the front app ourselves and close what's blocked.
-        Browsers are closed too, because their tabs can't be checked without the helper."""
+        """The helper is gone: check the front app ourselves and close blocked apps.
+        Allowed browsers stay open (their tabs can't be checked until the helper is back)."""
         front = frontmost_app(prefix=("launchctl", "asuser", str(cfg["uid"])))
-        if front and front.name in BROWSERS:
-            log(f"closing {front.name}: the helper that reads tabs has been silent "
-                f"{int(time.time() - self.last_agent)}s")
         obs = {"app": asdict(front) if front else None, "no_agent": True}
         with self.lock:
             actions = self.policy.tick(obs)

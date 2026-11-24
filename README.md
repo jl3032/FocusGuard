@@ -17,18 +17,18 @@ FocusGuard has three parts:
 | Part | Runs as | Job |
 |---|---|---|
 | Root service (`/Library/LaunchDaemons/com.focusguard.root.plist`) | root | Makes every decision, holds all settings and state, runs the AI chat. The blocked user can't stop it, edit its files or uninstall it. |
-| Helper (`/Library/LaunchAgents/com.focusguard.agent.plist`) | the blocked user | Tells the root service which app and tab are in front, and quits/redirects what it's told to. If it's killed it is restarted, and meanwhile the root service closes blocked apps and browsers itself. Reports from any other process are ignored. |
+| Helper (`/Library/LaunchAgents/com.focusguard.agent.plist`) | the blocked user | Tells the root service which app and tab are in front, and quits/redirects what it's told to. If it's killed it is restarted, and meanwhile the root service closes blocked apps itself (allowed browsers stay open). Reports from any other process are ignored. |
 | Window (`/Applications/FocusGuard.app`) | the blocked user | Shows status and the AI chat. Saving settings or pausing needs an administrator's password. |
 
 Files live in `/Library/Application Support/FocusGuard`, owned by root. It only enforces for the user who ran the installer; other users on the Mac aren't affected.
 
 Workarounds it closes:
-- **Killing or unloading it** (Activity Monitor, Terminal, VS Code): the root service restarts the helper and closes browsers until it's back.
+- **Killing or unloading it** (Activity Monitor, Terminal, VS Code): the root service restarts it within seconds and keeps closing blocked apps meanwhile. Allowed browsers are never closed just because their tabs can't be read, so websites go unchecked for those few seconds.
 - **Editing its settings** (TextEdit, scripts): the files are root-owned.
 - **Uninstalling, pausing, changing lists**: need an administrator password; the password window says exactly what is being newly allowed.
 - **Renaming a game** to an allowed app's name (`Notes.app`, `Finder.app`): apps are matched by location and bundle ID.
 - **Games run through Python**: "Python" is only allowed when it's FocusGuard's own window.
-- **Turning off the browser permission**: the browser is closed instead of websites going unchecked.
+- **Turning off the browser permission**: websites in that browser can't be checked; FocusGuard keeps showing a warning (and logs it) but doesn't close the browser.
 - **Talking the AI into it** ("my parent said it's fine"): the AI is told to ignore such claims, and the chat history lives in the root service, so it can't be faked.
 
 For any of this to hold, **the blocked account must be a Standard user** (System Settings → Users & Groups) and the administrator password must belong to someone else.
@@ -76,7 +76,7 @@ To remove it, double-click **`Uninstall FocusGuard.command`** (or run `zsh ~/Dow
 If Ollama isn't running, FocusGuard starts it. While the AI can't be reached, unlock requests fail and page checks are skipped.
 
 Permissions macOS will ask for:
-- **Automation:** allow python to control Safari/Chrome and System Events. Without this, the browser is closed because its websites can't be checked.
+- **Automation:** allow python to control Safari/Chrome and System Events. Without this, websites in that browser can't be checked (FocusGuard warns about it).
 - **Accessibility (optional):** add `/Library/Application Support/FocusGuard/venv/bin/python` so FocusGuard can read window titles of unlocked *apps* for the on-task check.
 
 ## Settings
