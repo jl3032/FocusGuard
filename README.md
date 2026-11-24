@@ -118,7 +118,7 @@ The AI chat gives up after a minute if the AI doesn't answer.
 
 ## The AI reads the screen
 
-On work and limited sites the AI judges each page by its title, and also looks at a screenshot: when a page opens, and every 45 seconds while it stays open (every 2 minutes on Intel Macs, where it's slower). So a game on a site called "Math Practice" is still caught. Screenshots are judged by the free AI on the Mac and never saved or sent anywhere.
+On work and limited sites the AI judges each page by its title, and also looks at a screenshot: when a page opens, and every 90 seconds while it stays open (every 3 minutes on Intel Macs, where it's slower). So a game on a site called "Math Practice" is still caught. Screenshots are judged by the free AI on the Mac and never saved or sent anywhere.
 
 This needs **Screen Recording** permission: System Settings → Privacy & Security → Screen Recording → turn on **python**. Until it's on, FocusGuard shows a reminder and judges by titles only. The screen models need a recent Ollama (0.7 or newer); the Ollama app updates itself.
 

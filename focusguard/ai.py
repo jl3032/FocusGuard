@@ -29,12 +29,18 @@ chat_active = threading.Event()
 
 
 def _json_call(system: str, messages: list, schema: dict, effort: str = "low",
-               max_tokens: int = 6000, timeout: float = 120, kind: str = "model") -> dict:
+               max_tokens: int = 6000, timeout: float = 120, kind: str = "model",
+               priority: bool = False) -> dict:
     """kind="vision": the messages carry screenshots ("images": [base64 JPEG])."""
     cfg = load_config()
     if cfg.get("provider", "ollama") == "anthropic":
         return _claude_call(cfg, system, messages, schema, effort, max_tokens)
-    return _ollama_call(cfg, system, messages, schema, timeout, kind)
+    if not _take_turn(priority, wait=timeout):
+        raise AIError("The free AI is busy with other checks. Try again in a moment.")
+    try:
+        return _ollama_call(cfg, system, messages, schema, timeout, kind)
+    finally:
+        _ollama_lock.release()
 
 
 # ------------------------------------------------------------- Ollama (free, local)
@@ -172,7 +178,32 @@ KEEP_LOADED = "30m"
 # The same for every request: Ollama reloads the whole model whenever num_ctx changes.
 # num_ctx: Ollama's default window is small and silently cuts off the start of long prompts
 # (our rules). num_predict: stop a runaway answer instead of hanging.
-OLLAMA_OPTIONS = {"temperature": 0.1, "num_ctx": 8192, "num_predict": 700}   # keep the model in memory between checks; loading it takes a while
+# 4096 fits every prompt (rules + a screenshot) and keeps the model small enough to stay
+# fully on the graphics chip of a 16 GB Mac; 8192 could push part of it onto the slow CPU.
+OLLAMA_OPTIONS = {"temperature": 0.1, "num_ctx": 4096, "num_predict": 700}
+
+# Ollama answers one request at a time. Send one at a time, so a request's time limit
+# counts from when it's actually being answered, and let the chat and task checks (the
+# user is waiting for those) go before background page checks.
+_ollama_lock = threading.Lock()
+_priority_lock = threading.Lock()
+_priority_waiting = [0]
+
+
+def _take_turn(priority: bool, wait: float) -> bool:
+    deadline = time.time() + wait
+    if priority:
+        with _priority_lock:
+            _priority_waiting[0] += 1
+    try:
+        while time.time() < deadline:
+            if (priority or not _priority_waiting[0]) and _ollama_lock.acquire(timeout=0.2):
+                return True
+        return False
+    finally:
+        if priority:
+            with _priority_lock:
+                _priority_waiting[0] -= 1   # keep the model in memory between checks; loading it takes a while
 
 
 def warm_up() -> None:
@@ -356,7 +387,8 @@ Current situation:
 def gatekeeper(chat: list, context: str) -> dict:
     cfg = load_config()
     system = GATEKEEPER_SYSTEM.format(max_minutes=cfg["max_grant_minutes"], context=context)
-    result = _json_call(system, chat, GATEKEEPER_SCHEMA, effort="medium", timeout=55)
+    result = _json_call(system, chat, GATEKEEPER_SCHEMA, effort="medium", timeout=55,
+                        priority=True)
     result.pop("thinking", None)
     for k, v in (("reply", "Sorry, I didn't catch that. Can you say it again?"),
                  ("decision", "ask"), ("target_kind", "none"), ("target", ""),
@@ -623,7 +655,7 @@ def review_task(purpose: str, links: list, titles: dict) -> dict:
                                "\n  page title: (couldn't fetch)")
         for i, link in enumerate(links, 1)]
     r = _json_call(TASK_SYSTEM, [{"role": "user", "content": "\n".join(lines)}],
-                   TASK_SCHEMA, max_tokens=2000, timeout=45)
+                   TASK_SCHEMA, max_tokens=2000, timeout=45, priority=True)
     return {"approve": r.get("decision") == "approve",
             "reply": str(r.get("reply", "")) or "I couldn't decide. Try describing the task "
                                                  "more clearly."}

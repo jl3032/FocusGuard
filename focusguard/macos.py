@@ -245,7 +245,8 @@ def screen_access(ask: bool = False) -> bool:
         return False
 
 
-SCREENSHOT_PX = 1280   # longest side; enough to read a page, small enough to judge quickly
+SCREENSHOT_PX = 960    # longest side: enough to tell a game from a document; bigger
+                       # pictures take the local AI much longer to look at
 
 
 def capture_screen():

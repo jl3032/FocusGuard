@@ -153,6 +153,34 @@ def run(group: str, name: str, fn, expected: str, got_of):
     sys.stdout.flush()
 
 
+def health(cfg: dict):
+    """Is the model fully on the graphics chip, and is the Mac short of memory?"""
+    import json
+    import urllib.request
+    try:
+        with urllib.request.urlopen(cfg["ollama_url"].rstrip("/") + "/api/ps", timeout=5) as r:
+            loaded = json.loads(r.read()).get("models", [])
+    except (OSError, ValueError):
+        loaded = []
+    for m in loaded:
+        size, vram = m.get("size", 0), m.get("size_vram", 0)
+        share = round(100 * vram / size) if size else 0
+        note = "good" if share >= 99 else "PART OF IT RUNS ON THE SLOW CPU"
+        print(f"  Loaded: {m.get('name')} {size / 2**30:.1f} GB, {share}% on the graphics chip"
+              f" ({note}), context {m.get('context_length', '?')}")
+    if len(loaded) > 1:
+        print(f"  Note: {len(loaded)} models are loaded at once; they share the memory.")
+    try:
+        out = subprocess.run(["memory_pressure"], capture_output=True, text=True,
+                             timeout=20).stdout.strip().splitlines()
+        free = next((line for line in out if "free percentage" in line), "")
+        if free:
+            print(f"  {free.strip()}")
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    sys.stdout.flush()
+
+
 def main():
     cfg = load_config()
     hw = hardware()
@@ -185,6 +213,7 @@ def main():
     t = time.time()
     ai.warm_up()
     print(f"  ready after {time.time() - t:.0f}s")
+    health(cfg)
 
     print("\n1. Page titles (should it be blocked?)")
     for name, url, title, limited, block in PAGES:
@@ -219,6 +248,8 @@ def main():
                                                           CHAT_CONTEXT),
             expected, lambda r: (r["decision"], r["reply"]))
 
+    print("\nAfter the test:")
+    health(cfg)
     print("\nSummary")
     for group in ("pages", "screens", "tasks", "chat"):
         rows = [r for r in results if r[0] == group]

@@ -26,7 +26,7 @@ STRIKE_WINDOW = 30 * 60   # a 2nd distracting page on a site within this long bl
 NOTIFY_COOLDOWN = 20
 # How often the AI looks at the screen while a page stays open (a page can turn into a game
 # without its address or title changing). Looking at a picture is slow on Intel Macs.
-SCREEN_EVERY_APPLE, SCREEN_EVERY_INTEL = 45, 120
+SCREEN_EVERY_APPLE, SCREEN_EVERY_INTEL = 90, 180
 BLOCK_NOW_SECONDS = 120   # a verdict still blocks the user's current tab on that site this long
 MAX_TICK_CREDIT = 5    # seconds counted per tick at most (ignores sleep/wake gaps)
 WARN_AT = (300, 60)    # warn when this many seconds of a daily allowance are left
@@ -39,7 +39,7 @@ PROTECTED_APP_DIRS = ("/Applications/", "/System/Applications/")
 class Daemon:
     def __init__(self, trusted_gui=lambda pid: False):
         self.trusted_gui = trusted_gui      # pid -> is it FocusGuard's own window?
-        self.pool = ThreadPoolExecutor(max_workers=2)
+        self.pool = ThreadPoolExecutor(max_workers=1)   # the local AI answers one at a time
         self.pending = {}                   # key -> (kind, info, future)
         self.distraction_cache = {}         # url -> bool
         self.current_host = None            # site the AI is currently watching
