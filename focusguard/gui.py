@@ -549,17 +549,32 @@ class Main(ttk.Frame):
         ttk.Spinbox(row, from_=5, to=TASK_MAX_MINUTES, increment=5, width=5,
                     textvariable=minutes).pack(side="left", padx=6)
 
+        verdict = ttk.Label(frm, text="", wraplength=420, foreground="#555")
+        verdict.pack(anchor="w", pady=(8, 0))
+
         def go():
             try:
                 mins = int(minutes.get())
             except (tk.TclError, ValueError):
                 mins = 0
-            if self.op("task_start", purpose=purpose.get(), minutes=mins,
-                       links=[e.get() for e in links if e.get().strip()]):
-                win.destroy()
+            start.state(["disabled"])
+            verdict.config(text="The AI is checking that the links fit the task…",
+                           foreground="#555")
+            req = {"purpose": purpose.get(), "minutes": mins,
+                   "links": [e.get() for e in links if e.get().strip()]}
+
+            def work():
+                try:
+                    request("task_start", timeout=75, **req)
+                    self.after(0, win.destroy)
+                except ServiceError as e:
+                    self.after(0, lambda: (verdict.config(text=str(e), foreground="#c0392b"),
+                                           start.state(["!disabled"])))
+            threading.Thread(target=work, daemon=True).start()
         btns = ttk.Frame(frm)
         btns.pack(fill="x", pady=(12, 0))
-        ttk.Button(btns, text="Start", command=go).pack(side="right")
+        start = ttk.Button(btns, text="Start", command=go)
+        start.pack(side="right")
         ttk.Button(btns, text="Cancel", command=win.destroy).pack(side="right", padx=6)
         purpose.focus_set()
 

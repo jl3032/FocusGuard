@@ -577,3 +577,50 @@ def check_screen(image_b64: str, url: str, title: str, limited_site: str = "") -
 def host_of_url(url: str) -> str:
     from .common import host_of
     return host_of(url) or ""
+
+
+# ------------------------------------------------------------- task review
+TASK_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "thinking": {"type": "string"},
+        "decision": {"type": "string", "enum": ["approve", "reject"]},
+        "reply": {"type": "string"},
+    },
+    "required": ["thinking", "decision", "reply"],
+    "additionalProperties": False,
+}
+
+TASK_SYSTEM = """You review task periods for FocusGuard, a focus tool on a student's Mac. \
+To start a task the student says what they are working on and gives up to 2 links. During the \
+task those links are never blocked or checked, so only approve links that make sense for the \
+task.
+
+Approve when every link plausibly helps with the stated task: e.g. a Google Doc or Slides for \
+an essay or presentation, a school or class website, a learning site (Khan Academy, Quizlet, \
+Wikipedia, a course), a specific video or article on the topic, a tool the task needs \
+(Canva, GitHub, a coding site), or a homework site hosted on vercel.app or similar.
+
+Reject when:
+- the task is vague ("stuff", "homework" with nothing more is OK only if the links are clearly \
+school tools) or is entertainment;
+- a link doesn't fit the task, or is a game, gaming video, social feed or entertainment page;
+- a link is a whole general-purpose site (youtube.com, reddit.com, tiktok.com, instagram.com, \
+x.com, twitch.tv) instead of the specific page needed. Ask for the exact video or page link.
+You get each link's page title when it could be fetched; use it, and be suspicious when a \
+title doesn't match the task.
+
+"thinking": one or two sentences. "reply": 1-2 friendly sentences to the student: if approved \
+say so; if rejected say exactly what to change."""
+
+
+def review_task(purpose: str, links: list, titles: dict) -> dict:
+    lines = [f"Task: {purpose}"] + [
+        f"Link {i}: {link}" + (f'\n  page title: "{titles[link]}"' if titles.get(link) else
+                               "\n  page title: (couldn't fetch)")
+        for i, link in enumerate(links, 1)]
+    r = _json_call(TASK_SYSTEM, [{"role": "user", "content": "\n".join(lines)}],
+                   TASK_SCHEMA, max_tokens=2000, timeout=45)
+    return {"approve": r.get("decision") == "approve",
+            "reply": str(r.get("reply", "")) or "I couldn't decide. Try describing the task "
+                                                 "more clearly."}

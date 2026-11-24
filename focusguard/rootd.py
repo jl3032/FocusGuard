@@ -33,6 +33,7 @@ from .macos import frontmost_app, kill_pid, notify, user_prefix
 
 SOL_LOCAL, LOCAL_PEERPID = 0, 0x002          # from <sys/un.h>
 TESTING = os.environ.get("FOCUSGUARD_TEST") == "1"
+TASK_REVIEW_DEADLINE = 50   # the AI's check of a task's links
 CHAT_DEADLINE = 60           # the chat answers (or says it can't) within this many seconds
 AGENT_QUIET_RESTART = 6      # seconds without a helper report before restarting it
 AGENT_QUIET_ENFORCE = 25     # ... before the root service enforces by itself
@@ -196,7 +197,8 @@ class RootService:
             return {"ok": True}
         if op == "task_start":
             purpose = str(req.get("purpose", "")).strip()[:200]
-            links = [str(x).strip()[:500] for x in req.get("links", []) if str(x).strip()]
+            links = [expand_link(str(x).strip()[:500]) for x in req.get("links", [])
+                     if str(x).strip()]
             try:
                 minutes = int(req.get("minutes", 0))
             except (TypeError, ValueError):
@@ -209,6 +211,10 @@ class RootService:
                 return {"error": "Each link should be a website address, e.g. docs.google.com."}
             if not 1 <= minutes <= TASK_MAX_MINUTES:
                 return {"error": f"A task period can be 1 to {TASK_MAX_MINUTES} minutes."}
+            verdict = self.review_task(purpose, links)
+            if not verdict["approve"]:
+                log(f"task not approved: {purpose} — {', '.join(links)}: {verdict['reply']}")
+                return {"error": verdict["reply"], "rejected": True}
             task = {"purpose": purpose, "links": links, "started": now,
                     "until": now + minutes * 60}
             update_state(lambda s: s.update(task=task))
@@ -234,6 +240,25 @@ class RootService:
         save_config(new_cfg)
         log("clock-in times changed: " + ", ".join(f"{d} {t}" for d, t in clean.items()))
         return {"ok": True}
+
+    def review_task(self, purpose: str, links: list) -> dict:
+        """Have the AI check that the links make sense for the task. If the AI can't answer,
+        the task doesn't start (otherwise quitting the AI app would approve anything)."""
+        titles = {link: page_title(link) for link in links}
+        ai.chat_active.set()   # pause page checks so the AI answers this first
+        try:
+            fut = self.chat_pool.submit(ai.review_task, purpose, links, titles)
+            return fut.result(timeout=TASK_REVIEW_DEADLINE)
+        except FutureTimeout:
+            return {"approve": False, "reply": "The AI didn't check the links in time. "
+                                               "Try again in a moment."}
+        except ai.AIError as e:
+            return {"approve": False, "reply": f"The AI couldn't check the links: {e}"}
+        except Exception:  # noqa: BLE001
+            log("task review crashed:\n" + traceback.format_exc())
+            return {"approve": False, "reply": "Something went wrong checking the links."}
+        finally:
+            ai.chat_active.clear()
 
     # ------------------------------------------------------------ AI unblock chat
     def context(self) -> str:
@@ -373,6 +398,45 @@ class RootService:
                     self.enforce_without_agent(cfg)
             except Exception:
                 log("watchdog error:\n" + traceback.format_exc())
+
+
+def expand_link(link: str) -> str:
+    """youtu.be/ID -> youtube.com/watch?v=ID, so it matches what the browser shows."""
+    m = re.match(r"^(?:https?://)?(?:www\.)?youtu\.be/([\w-]+)", link)
+    return f"https://www.youtube.com/watch?v={m.group(1)}" if m else link
+
+
+def page_title(link: str) -> str:
+    """The page's title, fetched the way a browser would (first part of the page only)."""
+    url = link if "://" in link else "https://" + link
+    host = normalize_domain(url)
+
+    def fetch(u, limit=1_000_000):
+        try:
+            r = subprocess.run(["/usr/bin/curl", "-sL", "--max-time", "6", "--max-redirs", "5",
+                                "-A", "Mozilla/5.0 (Macintosh) FocusGuard",
+                                "-H", "Accept-Language: en", "--", u],
+                               capture_output=True, timeout=10)
+        except (OSError, subprocess.TimeoutExpired):
+            return ""
+        return r.stdout[:limit].decode("utf-8", errors="replace")
+    if host in ("youtube.com", "m.youtube.com", "youtu.be") and ("watch" in url or host == "youtu.be"
+                                                                 or "/shorts/" in url):
+        # YouTube's pages are huge; its oEmbed lookup gives the title and channel directly.
+        from urllib.parse import quote
+        try:
+            info = json.loads(fetch("https://www.youtube.com/oembed?format=json&url=" + quote(url, safe="")))
+            return f"{info.get('title', '')} (channel: {info.get('author_name', '')})"[:200]
+        except ValueError:
+            return ""
+    html = fetch(url)
+    import html as htmllib
+    for pattern in (r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)',
+                    r"<title[^>]*>([^<]+)</title>"):
+        m = re.search(pattern, html, re.I)
+        if m:
+            return htmllib.unescape(" ".join(m.group(1).split()))[:200]
+    return ""
 
 
 def main():

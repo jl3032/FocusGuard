@@ -112,7 +112,7 @@ Anyone with the administrator password can turn it off. Without it, a determined
 
 Each day of the week has its own clock-in time (**Clock-in times…** in the main window). Changing them needs the password of the Mac account FocusGuard is set up for, not an administrator password. Home rules start by themselves at the clock-in time.
 
-A task link can be a whole site (`docs.google.com`) or one page (`youtube.com/watch?v=…` allows just that video).
+A task link can be a whole site (`docs.google.com`) or one page (`youtube.com/watch?v=…` allows just that video). Before a task starts, the AI checks that the links make sense for it (FocusGuard fetches each link's page title, and a YouTube video's title and channel, to show the AI). It turns down games, entertainment, links that don't fit the task, and whole sites like youtube.com where one page is enough, and says what to change. If the AI can't answer, the task doesn't start.
 
 The AI chat gives up after a minute if the AI doesn't answer.
 
