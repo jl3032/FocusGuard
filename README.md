@@ -108,11 +108,11 @@ Anyone with the administrator password can turn it off. Without it, a determined
 | Midnight until the day's clock-in time | **School time:** nothing is blocked and the AI is off. |
 | From the clock-in time (or earlier with **Clock in now**) until midnight | **Home rules:** the normal blocking described above. |
 | **Dinner break** (once a day, at home) | 30 minutes with nothing blocked, then home rules come back by themselves. |
-| **Task** (at home, up to 2 hours) | Type what you're working on and up to 2 links. Those links are never blocked or judged during the task; everything else follows home rules. |
+| **Task** (at home, up to 2 hours) | Type what you're working on and up to 2 links or apps. Those are never blocked or judged during the task; everything else follows home rules. |
 
 Each day of the week has its own clock-in time (**Clock-in times…** in the main window). Changing them needs the password of the Mac account FocusGuard is set up for, not an administrator password. Home rules start by themselves at the clock-in time.
 
-A task link can be a whole site (`docs.google.com`) or one page (`youtube.com/watch?v=…` allows just that video). Before a task starts, the AI checks that the links make sense for it (FocusGuard fetches each link's page title, and a YouTube video's title and channel, to show the AI). It turns down games, entertainment, links that don't fit the task, and whole sites like youtube.com where one page is enough, and says what to change. If the AI can't answer, the task doesn't start.
+A task link can be a whole site (`docs.google.com`) or one page (`youtube.com/watch?v=…` allows just that video). Before a task starts, the AI checks that the links and apps make sense for it (FocusGuard fetches each link's page title, and a YouTube video's title and channel, to show the AI). It turns down games, entertainment, links that don't fit the task, and whole sites like youtube.com where one page is enough, and says what to change. If the AI can't answer, the task doesn't start.
 
 The AI chat gives up after a minute if the AI doesn't answer.
 
@@ -138,3 +138,5 @@ Bigger models judge more accurately but need more memory and are slower. With **
 The screen models are only used for screenshots: in Ollama they read text about 8 times slower than the text models, which made every check take minutes.
 
 You can pick a different size in Setup (needs the administrator password). A new model downloads in the background, and a model already on the Mac is used until it's ready. On Intel Macs the free AI is slow and makes more mistakes.
+
+Apps are recognised by what they really are (where they're installed and the developer's app ID), not just their name, so an app whose file is called `BambuStudio` but shows as "Bambu Studio" still counts, and a game renamed to look like an allowed app doesn't.

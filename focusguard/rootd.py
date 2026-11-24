@@ -199,26 +199,30 @@ class RootService:
             purpose = str(req.get("purpose", "")).strip()[:200]
             links = [expand_link(str(x).strip()[:500]) for x in req.get("links", [])
                      if str(x).strip()]
+            apps = [app_info(str(p)) for p in req.get("apps", []) if str(p).strip()]
+            if any(a is None for a in apps):
+                return {"error": "One of the apps couldn't be found. Pick it from the list."}
             try:
                 minutes = int(req.get("minutes", 0))
             except (TypeError, ValueError):
                 minutes = 0
             if not purpose:
                 return {"error": "Say what you're working on."}
-            if not 1 <= len(links) <= TASK_MAX_LINKS:
-                return {"error": f"Give 1 or {TASK_MAX_LINKS} links."}
+            if not 1 <= len(links) + len(apps) <= TASK_MAX_LINKS:
+                return {"error": f"Give 1 or {TASK_MAX_LINKS} links or apps."}
             if any(not normalize_domain(x) or "." not in normalize_domain(x) for x in links):
                 return {"error": "Each link should be a website address, e.g. docs.google.com."}
             if not 1 <= minutes <= TASK_MAX_MINUTES:
                 return {"error": f"A task period can be 1 to {TASK_MAX_MINUTES} minutes."}
-            verdict = self.review_task(purpose, links)
+            items = ", ".join(links + [a["name"] for a in apps])
+            verdict = self.review_task(purpose, links, apps)
             if not verdict["approve"]:
-                log(f"task not approved: {purpose} — {', '.join(links)}: {verdict['reply']}")
+                log(f"task not approved: {purpose} — {items}: {verdict['reply']}")
                 return {"error": verdict["reply"], "rejected": True}
-            task = {"purpose": purpose, "links": links, "started": now,
+            task = {"purpose": purpose, "links": links, "apps": apps, "started": now,
                     "until": now + minutes * 60}
             update_state(lambda s: s.update(task=task))
-            log(f"task period {minutes}m: {purpose} — {', '.join(links)}")
+            log(f"task period {minutes}m: {purpose} — {items}")
             return {"ok": True}
         # set_schedule: needs the account password of the user FocusGuard is for
         self.pw_failures = [t for t in self.pw_failures if now - t < 300]
@@ -241,13 +245,13 @@ class RootService:
         log("clock-in times changed: " + ", ".join(f"{d} {t}" for d, t in clean.items()))
         return {"ok": True}
 
-    def review_task(self, purpose: str, links: list) -> dict:
+    def review_task(self, purpose: str, links: list, apps: list = ()) -> dict:
         """Have the AI check that the links make sense for the task. If the AI can't answer,
         the task doesn't start (otherwise quitting the AI app would approve anything)."""
         titles = {link: page_title(link) for link in links}
         ai.chat_active.set()   # pause page checks so the AI answers this first
         try:
-            fut = self.chat_pool.submit(ai.review_task, purpose, links, titles)
+            fut = self.chat_pool.submit(ai.review_task, purpose, links, titles, list(apps))
             return fut.result(timeout=TASK_REVIEW_DEADLINE)
         except FutureTimeout:
             return {"approve": False, "reply": "The AI didn't check the links in time. "
@@ -398,6 +402,24 @@ class RootService:
                     self.enforce_without_agent(cfg)
             except Exception:
                 log("watchdog error:\n" + traceback.format_exc())
+
+
+def app_info(path: str):
+    """{"name", "path", "bundle_id"} of an app, read from the app itself (not from what the
+    window sent), or None if it isn't a real app."""
+    import plistlib
+    path = os.path.realpath(path)
+    if not path.endswith(".app"):
+        return None
+    try:
+        with open(os.path.join(path, "Contents", "Info.plist"), "rb") as f:
+            info = plistlib.load(f)
+    except (OSError, plistlib.InvalidFileException, ValueError):
+        return None
+    name = (info.get("CFBundleDisplayName") or info.get("CFBundleName")
+            or os.path.basename(path)[:-4])
+    return {"name": str(name)[:100], "path": path,
+            "bundle_id": str(info.get("CFBundleIdentifier", ""))[:200]}
 
 
 def expand_link(link: str) -> str:

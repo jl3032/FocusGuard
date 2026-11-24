@@ -13,6 +13,7 @@ import copy
 import fcntl
 import json
 import os
+import re
 import socket
 import time
 import uuid
@@ -289,13 +290,19 @@ def match_site(host: str, domains: list):
     return next((d for d in domains if site_covers(host, d)), None)
 
 
+def app_key(name: str) -> str:
+    """Compare app names ignoring spaces, capitals and punctuation: the .app file can be
+    "BambuStudio" while macOS shows the running app as "Bambu Studio"."""
+    return re.sub(r"[^a-z0-9]", "", name.lower())
+
+
 def find_item(items: list, kind: str, target: str):
     for it in items:
         if it["kind"] != kind:
             continue
         if kind == "site" and site_covers(target, it["target"]):
             return it
-        if kind == "app" and it["target"].lower() == target.lower():
+        if kind == "app" and app_key(it["target"]) == app_key(target):
             return it
     return None
 

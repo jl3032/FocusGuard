@@ -10,7 +10,7 @@ import time
 import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
 
-from .common import (DAY_NAMES, DAYS, DINNER_MINUTES, TASK_MAX_LINKS, TASK_MAX_MINUTES, mode,
+from .common import (DAY_NAMES, app_key, DAYS, DINNER_MINUTES, TASK_MAX_LINKS, TASK_MAX_MINUTES, mode,
                      today,
                      ServiceError, api_key_saved, limited_items,
                      load_config, load_state, normalize_domain, paused, request, seconds_left)
@@ -506,9 +506,9 @@ class Main(ttk.Frame):
                 self.status.config(text=(f"Task until {at(task['until'])}: {task['purpose']}"
                                          if task else "Home — blocking is on"),
                                    foreground="#2a7")
+            items = (task["links"] + [a["name"] for a in task.get("apps", [])]) if task else []
             detail = ("Work apps and sites always work. Everything else is blocked."
-                      + (f" Never blocked during this task: {', '.join(task['links'])}."
-                         if task else ""))
+                      + (f" Never blocked during this task: {', '.join(items)}." if task else ""))
             show = [self.task_end_btn if task else self.task_btn]
             if st.get("dinner_day") != today():
                 show.append(self.dinner_btn)
@@ -536,10 +536,12 @@ class Main(ttk.Frame):
         ttk.Label(frm, text="What are you working on?").pack(anchor="w")
         purpose = ttk.Entry(frm, width=50)
         purpose.pack(anchor="w", fill="x", pady=(0, 8))
-        ttk.Label(frm, text=f"Links you need (up to {TASK_MAX_LINKS}). They won't be blocked "
-                            "at all during the task.\nA site (docs.google.com) or a full link "
-                            "to one page.", wraplength=420).pack(anchor="w")
-        links = [ttk.Entry(frm, width=50) for _ in range(TASK_MAX_LINKS)]
+        ttk.Label(frm, text=f"Links or apps you need (up to {TASK_MAX_LINKS}). They won't be "
+                            "blocked at all during the task.\nType a site (docs.google.com) or "
+                            "a link to one page, or pick an app from the list.",
+                  wraplength=420).pack(anchor="w")
+        apps = installed_apps()
+        links = [ttk.Combobox(frm, width=48, values=list(apps)) for _ in range(TASK_MAX_LINKS)]
         for e in links:
             e.pack(anchor="w", fill="x", pady=2)
         row = ttk.Frame(frm)
@@ -560,8 +562,11 @@ class Main(ttk.Frame):
             start.state(["disabled"])
             verdict.config(text="The AI is checking that the links fit the task…",
                            foreground="#555")
+            picked = [e.get().strip() for e in links if e.get().strip()]
+            by_key = {app_key(n): info for n, info in apps.items()}
             req = {"purpose": purpose.get(), "minutes": mins,
-                   "links": [e.get() for e in links if e.get().strip()]}
+                   "links": [x for x in picked if app_key(x) not in by_key],
+                   "apps": [by_key[app_key(x)]["path"] for x in picked if app_key(x) in by_key]}
 
             def work():
                 try:

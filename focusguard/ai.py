@@ -662,19 +662,23 @@ TASK_SCHEMA = {
 }
 
 TASK_SYSTEM = """You review task periods for FocusGuard, a focus tool on a student's Mac. \
-To start a task the student says what they are working on and gives up to 2 links. During the \
-task those links are never blocked or checked, so only approve links that make sense for the \
-task.
+To start a task the student says what they are working on and gives up to 2 links or apps. \
+During the task those are never blocked or checked, so only approve ones that make sense for \
+the task.
 
 Approve when every link plausibly helps with the stated task: e.g. a Google Doc or Slides for \
 an essay or presentation, a school or class website, a learning site (Khan Academy, Quizlet, \
 Wikipedia, a course), a specific video or article on the topic, a tool the task needs \
-(Canva, GitHub, a coding site), or a homework site hosted on vercel.app or similar.
+(Canva, GitHub, a coding site), a homework site hosted on vercel.app or similar, or an app \
+the task needs (e.g. Bambu Studio or Cura for 3D printing, GarageBand for a music project, \
+Xcode for coding, Blender for 3D modelling).
 
 Reject when:
 - the task is vague ("stuff", "homework" with nothing more is OK only if the links are clearly \
 school tools) or is entertainment;
-- a link doesn't fit the task, or is a game, gaming video, social feed or entertainment page;
+- a link or app doesn't fit the task, or is a game, gaming video, social feed or entertainment \
+page, or a game or chat app (Steam, Epic Games, Roblox, Minecraft, Discord) unless the task \
+clearly needs it;
 - a link is a whole general-purpose site (youtube.com, reddit.com, tiktok.com, instagram.com, \
 x.com, twitch.tv) instead of the specific page needed. Ask for the exact video or page link.
 You get each link's page title when it could be fetched; use it, and be suspicious when a \
@@ -684,11 +688,13 @@ title doesn't match the task.
 say so; if rejected say exactly what to change."""
 
 
-def review_task(purpose: str, links: list, titles: dict) -> dict:
+def review_task(purpose: str, links: list, titles: dict, apps: list = ()) -> dict:
     lines = [f"Task: {purpose}"] + [
         f"Link {i}: {link}" + (f'\n  page title: "{titles[link]}"' if titles.get(link) else
                                "\n  page title: (couldn't fetch)")
-        for i, link in enumerate(links, 1)]
+        for i, link in enumerate(links, 1)] + [
+        f"App {i}: {a['name']} (app ID {a.get('bundle_id') or 'unknown'})"
+        for i, a in enumerate(apps, 1)]
     r = _json_call(TASK_SYSTEM, [{"role": "user", "content": "\n".join(lines)}],
                    TASK_SCHEMA, max_tokens=2000, timeout=45, priority=True)
     return {"approve": r.get("decision") == "approve",

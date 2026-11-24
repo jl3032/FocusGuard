@@ -14,7 +14,7 @@ from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 
 from . import ai
-from .common import (find_item, host_of, limited_items, load_config, load_state, log,
+from .common import (app_key, find_item, host_of, limited_items, load_config, load_state, log,
                      match_site, mode, seconds_left, task_allows, update_state, usage_key)
 from .macos import (BROWSERS, UNMONITORABLE_BROWSERS, FrontApp, always_allowed,
                     block_page_url, hardware, is_system_process)
@@ -100,6 +100,8 @@ class Daemon:
         if name in PYTHON_NAMES and self.trusted_gui(front.pid):
             return
 
+        if self.task and self.task_app(front):
+            return   # one of the task period's apps: never blocked
         if name in UNMONITORABLE_BROWSERS:
             self.block_app(front, f"{name} can't be monitored; use Safari or Chrome")
             return
@@ -107,11 +109,11 @@ class Daemon:
             self.block_app(front, "blocked for distracting use")
             return
         grant = find_item(st["grants"], "app", name)
-        allowed = (name.lower() in {a.lower() for a in cfg["allowed_apps"]}
-                   and self.is_real_app(front, cfg))
+        allowed = self.picked(front, cfg["allowed_apps"], cfg) is not None
         if not allowed and not grant:
-            limited = find_item(limited_items(cfg), "app", name)
-            if not limited or not self.is_real_app(front, cfg):
+            limited_name = self.picked(front, [x["target"] for x in cfg["limited_apps"]], cfg)
+            limited = limited_name and find_item(limited_items(cfg), "app", limited_name)
+            if not limited:
                 self.block_app(front, "not on your allowed list")
             elif not self.spend(limited, st):
                 self.block_app(front, "today's time is used up; it unblocks at midnight")
@@ -148,16 +150,31 @@ class Daemon:
         self.notify("FocusGuard", msg)
         log(f"rules: {before} -> {m['name']}")
 
-    def is_real_app(self, front: FrontApp, cfg: dict) -> bool:
-        """Is this the app that was picked in setup, not a renamed copy of something else?"""
-        rec = cfg["app_ids"].get(front.name.lower())
-        if not rec:
-            return True          # typed in by hand: only the name is known
+    @staticmethod
+    def same_app(front: FrontApp, rec: dict) -> bool:
+        """Is the running app the one recorded (where it lives / the developer's app ID)?
+        A renamed copy of something else doesn't match."""
         if rec.get("path") and front.path == rec["path"]:
             return True
         return bool(rec.get("bundle_id") and front.bundle_id == rec["bundle_id"]
                     and (front.path.startswith(PROTECTED_APP_DIRS)
                          or "/AppTranslocation/" in front.path))
+
+    def picked(self, front: FrontApp, names: list, cfg: dict):
+        """Which of these picked app names is the front app? Apps picked from the list are
+        recognised by what they really are, whatever name macOS shows for them."""
+        ids = {app_key(k): v for k, v in cfg["app_ids"].items()}
+        for n in names:
+            rec = ids.get(app_key(n))
+            if rec:
+                if self.same_app(front, rec):
+                    return n
+            elif app_key(n) == app_key(front.name):
+                return n         # typed in by hand: only the name is known
+        return None
+
+    def task_app(self, front: FrontApp) -> bool:
+        return any(self.same_app(front, a) for a in self.task.get("apps", []))
 
     # ------------------------------------------------------------ browsers
     def handle_browser(self, front: FrontApp, obs: dict, cfg: dict, st: dict):
