@@ -48,18 +48,20 @@ _pull_started = set()
 
 # Free local models, from fastest to most accurate. Bigger is smarter but needs more memory,
 # and on Intel Macs (no fast AI chip) everything runs several times slower.
-# "model" judges text (page titles, chat); "vision" looks at screenshots. Where memory is
-# tight one vision model does both, so only one model has to fit in memory.
+# "model" judges text (page titles, chat, task links); "vision" only looks at screenshots.
+# They're separate on purpose: in Ollama the vision models read text about 8 times slower
+# (measured on an M3: 14 vs 115 words/s), so every text check took 1-2 minutes on them.
+# Ollama swaps the two in and out of memory in a few seconds when needed.
 MODEL_SIZES = {
-    "small": {"model": "qwen2.5vl:3b", "vision": "qwen2.5vl:3b", "gb": 3.2,
+    "small": {"model": "qwen2.5:3b", "vision": "qwen2.5vl:3b", "gb": 5.1,
               "label": "Small: fastest, least accurate"},
-    "medium": {"model": "qwen2.5vl:7b", "vision": "qwen2.5vl:7b", "gb": 6,
+    "medium": {"model": "qwen2.5:7b", "vision": "qwen2.5vl:7b", "gb": 10.7,
                "label": "Medium: good balance"},
     "large": {"model": "qwen2.5:14b", "vision": "qwen2.5vl:7b", "gb": 15,
               "label": "Large: most accurate, needs 24 GB+"},
 }
 # Models that can stand in while the chosen one downloads (least to most capable).
-TEXT_LADDER = ["qwen2.5:3b", "qwen2.5vl:3b", "qwen2.5:7b", "qwen2.5vl:7b", "qwen2.5:14b"]
+TEXT_LADDER = ["qwen2.5:3b", "qwen2.5:7b", "qwen2.5:14b"]   # never the slow vision ones
 VISION_LADDER = ["qwen2.5vl:3b", "qwen2.5vl:7b"]
 
 
@@ -116,6 +118,8 @@ def _model_to_use(base: str, cfg: dict, kind: str = "model") -> str:
     if want in ladder:
         i = ladder.index(want)
         ladder = sorted(ladder, key=lambda m: (abs(ladder.index(m) - i), ladder.index(m)))
+    if kind == "model":
+        ladder = ladder + VISION_LADDER[::-1]   # slow at text, but better than nothing
     fallback = next((m for m in ladder if m in have), None)
     if fallback:
         return fallback
@@ -560,11 +564,12 @@ First write "topic": what you see on the screen, in a few words (e.g. "a car rac
 navigation (home page, search results, a list of links or videos to pick from), unclear, or \
 entertainment.
 {extra}
-""" + LEARNING + """
-
-A game is entertainment even on a school-looking site, unless it is clearly an educational \
-exercise (e.g. a maths drill or typing practice). "reason" is one short sentence addressed \
-to the user."""
+entertainment = content just for fun: a game being played, a gaming, prank or reaction video, \
+memes, a social feed, sports or celebrity gossip, TV or films. A game is entertainment even \
+on a school-looking site, unless it's clearly an educational exercise (a maths drill, typing \
+practice). Lessons, lectures, documents, articles, exercises and educational videos are \
+learning or work. If you can't tell, answer unclear.
+"reason": one short sentence to the user."""
 
 SCREEN_VERIFY = """You double-check FocusGuard, a focus tool the user installed on their own \
 Mac. A first check looked at this screenshot and said it shows entertainment, which blocks the \
@@ -573,8 +578,6 @@ for fun (a game being played, a gaming or prank video, memes, a social feed). Pi
 category if it shows schoolwork, documents, reading, a lesson or lecture, an educational \
 exercise, a list of results to pick from ("navigation"), or you can't tell ("unclear").
 {extra}
-""" + LEARNING + """
-
 First write "topic": what you see, then "category", then "reason": one short sentence."""
 
 SCREEN_LIMITED = ("{site} may be built for one activity: using it for that activity "

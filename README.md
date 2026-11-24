@@ -128,11 +128,13 @@ Strikes and hour-long blocks apply to the exact site, e.g. `math-practice.vercel
 
 Bigger models judge more accurately but need more memory and are slower. With **Automatic** (the default), FocusGuard picks one from the Mac's chip and memory:
 
-| Mac | Model | Download |
-|---|---|---|
-| Apple Silicon (M1–M4), 24 GB memory or more | Large: `qwen2.5:14b` for text + `qwen2.5vl:7b` for screenshots | about 15 GB |
-| Apple Silicon, 16 GB | Medium: `qwen2.5vl:7b` for both | about 6 GB |
-| Apple Silicon, 8 GB | Small: `qwen2.5vl:3b` for both | about 3.2 GB |
-| Intel Mac (any memory) | Small: `qwen2.5vl:3b` for both | about 3.2 GB |
+| Mac | Text model (page titles, chat, tasks) | Screen model | Download |
+|---|---|---|---|
+| Apple Silicon (M1–M4), 24 GB memory or more | Large: `qwen2.5:14b` | `qwen2.5vl:7b` | about 15 GB |
+| Apple Silicon, 16 GB | Medium: `qwen2.5:7b` | `qwen2.5vl:7b` | about 11 GB |
+| Apple Silicon, 8 GB | Small: `qwen2.5:3b` | `qwen2.5vl:3b` | about 5 GB |
+| Intel Mac (any memory) | Small: `qwen2.5:3b` | `qwen2.5vl:3b` | about 5 GB |
+
+The screen models are only used for screenshots: in Ollama they read text about 8 times slower than the text models, which made every check take minutes.
 
 You can pick a different size in Setup (needs the administrator password). A new model downloads in the background, and a model already on the Mac is used until it's ready. On Intel Macs the free AI is slow and makes more mistakes.

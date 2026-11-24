@@ -7,7 +7,7 @@ set -euo pipefail
 SRC="${0:A:h}"
 TARGET_USER="$(id -un)"
 TARGET_UID="$(id -u)"
-MODEL="qwen2.5vl:7b"
+MODEL="qwen2.5:7b"
 OLD_LABEL="com.focusguard.daemon"
 OLD_DIR="$HOME/Library/Application Support/FocusGuard"
 
