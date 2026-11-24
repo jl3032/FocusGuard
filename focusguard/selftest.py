@@ -20,7 +20,7 @@ import traceback
 
 from . import ai
 from .common import load_config
-from .macos import hardware
+from .macos import SCREENSHOT_PX, hardware
 
 YT = "youtube.com"
 # (what it is, url, title, limited site or "" for a work site, should it be blocked?)
@@ -121,8 +121,10 @@ def render(html: str) -> str:
         subprocess.run(["qlmanage", "-t", "-s", "1280", "-o", d, page],
                        capture_output=True, timeout=30)
         png, jpg = page + ".png", os.path.join(d, "page.jpg")
-        subprocess.run(["sips", "-s", "format", "jpeg", "-s", "formatOptions", "60", png,
-                        "--out", jpg], capture_output=True, timeout=30)
+        # Same size as FocusGuard's real screenshots
+        subprocess.run(["sips", "-Z", str(SCREENSHOT_PX), "-s", "format", "jpeg",
+                        "-s", "formatOptions", "60", png, "--out", jpg],
+                       capture_output=True, timeout=30)
         with open(jpg, "rb") as f:
             return base64.b64encode(f.read()).decode()
     finally:
@@ -224,13 +226,15 @@ def main():
             lambda r: ("block" if r["distracting"] else "allow",
                        f"{r.get('category')}: {r.get('topic')} — {r.get('reason')}"))
 
-    print("\n2. Screenshots (test pages drawn on this Mac)")
+    print("\n2. Screenshots (test pages drawn on this Mac; the screen model is slower, "
+          "up to a minute or two each)")
     for name, html, url, title, block in SCREENS:
         try:
             shot = render(html)
         except (OSError, subprocess.TimeoutExpired) as e:
             print(f"  SKIP  {name}: couldn't draw the test page ({e})")
             continue
+        print(f"        asking about: {name}…", flush=True)
         run("screens", name, lambda shot=shot, url=url, title=title: ai.check_screen(shot, url, title),
             "block" if block else "allow",
             lambda r: ("block" if r["distracting"] else "allow",
