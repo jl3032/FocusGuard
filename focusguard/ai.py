@@ -412,24 +412,53 @@ it specific (e.g. "Watching the MIT 18.06 linear algebra lecture videos").
 - Tell the user in your reply that you'll be watching their activity on it.
 
 When not granting, set target_kind "none", target "", duration_minutes 0, purpose "".
+- Ask at most once or twice in a conversation. Once the user has answered your question, \
+decide: grant or deny. Never ask the same thing again.
+- If you already said no and the user just repeats, pleads or argues without a new, specific \
+work reason, deny again in one short sentence.
+
 "thinking": one or two sentences: what the user wants, which rule applies, your decision.
-"reply": 1-3 friendly sentences written directly to the user, matching your decision \
-(say yes when granting, no when denying, ask when asking).
+"reply": 1-3 friendly sentences written directly to the user, matching your decision, never \
+empty. Granting: say yes. Asking: ask one question. Denying: say clearly "No", give the reason \
+in a few words, and say what would change your answer (e.g. a specific school reason, or when \
+the penalty or daily limit resets).
 
 Current situation:
 {context}"""
 
 
-def gatekeeper(chat: list, context: str) -> dict:
+MAX_ASKS = 2   # questions in a row before the gatekeeper has to grant or deny
+
+DENY_REPLY = ("No, I can't unlock that. Tell me the exact school or work task you need it "
+              "for, or start a task period with the specific link.")
+FALLBACK_REPLY = {
+    "grant": "Yes, I've unlocked it. I'll be watching your activity on it.",
+    "ask": "What exactly do you need it for?",
+    "deny": DENY_REPLY,
+}
+
+
+def gatekeeper(chat: list, context: str, asks: int = 0) -> dict:
+    """asks: how many questions in a row the gatekeeper has already asked. After
+    MAX_ASKS it must decide, so the conversation can't go round in circles."""
     cfg = load_config()
+    if asks >= MAX_ASKS:
+        context += (f"\nYou have already asked {asks} questions. Do not ask again: "
+                    "decide now, grant or deny.")
     system = GATEKEEPER_SYSTEM.format(max_minutes=cfg["max_grant_minutes"], context=context)
     result = _json_call(system, chat, GATEKEEPER_SCHEMA, effort="medium", timeout=55,
                         priority=True)
     result.pop("thinking", None)
-    for k, v in (("reply", "Sorry, I didn't catch that. Can you say it again?"),
-                 ("decision", "ask"), ("target_kind", "none"), ("target", ""),
+    for k, v in (("decision", "ask"), ("target_kind", "none"), ("target", ""),
                  ("duration_minutes", 0), ("purpose", "")):
         result.setdefault(k, v)
+    if result["decision"] not in FALLBACK_REPLY:
+        result["decision"] = "ask"
+    if result["decision"] == "ask" and asks >= MAX_ASKS:
+        log(f"gatekeeper kept asking after {asks} questions; treated as a no")
+        result.update(decision="deny", target_kind="none", target="", reply=DENY_REPLY)
+    if not str(result.get("reply") or "").strip():
+        result["reply"] = FALLBACK_REPLY[result["decision"]]
     result["duration_minutes"] = max(1, min(int(result.get("duration_minutes") or 0),
                                             cfg["max_grant_minutes"]))
     return result

@@ -60,6 +60,7 @@ class RootService:
         self.update_lock = threading.Lock()
         self.policy = Daemon(trusted_gui=self.is_gui_pid)
         self.chat = []                         # the unblock conversation lives here, not in the GUI
+        self.chat_asks = 0                     # questions in a row the AI has asked
         self.last_agent = time.time()
         self.last_restart = 0.0
         self.agent_cache = (0, 0.0)            # (pid, checked_at)
@@ -149,7 +150,7 @@ class RootService:
             return self.chat_turn(str(req.get("text", ""))[:2000])
         if op == "chat_reset":
             with self.chat_lock:
-                self.chat = []
+                self.chat, self.chat_asks = [], 0
             return {"ok": True}
         if op == "resume":
             update_state(lambda s: s.update(paused_until=0))
@@ -298,7 +299,8 @@ class RootService:
             try:
                 # Hard deadline for the whole answer, however the AI gets stuck (starting
                 # up, loading the model, waiting behind a page check).
-                fut = self.chat_pool.submit(ai.gatekeeper, list(self.chat), self.context())
+                fut = self.chat_pool.submit(ai.gatekeeper, list(self.chat), self.context(),
+                                            self.chat_asks)
                 r = fut.result(timeout=CHAT_DEADLINE)
                 log(f"chat answered in {time.time() - started:.0f}s")
             except FutureTimeout:
@@ -317,6 +319,7 @@ class RootService:
             finally:
                 ai.chat_active.clear()
             self.chat.append({"role": "assistant", "content": r["reply"]})
+            self.chat_asks = self.chat_asks + 1 if r["decision"] == "ask" else 0
         return {"reply": r["reply"], "note": self.apply_grant(r)}
 
     def apply_grant(self, r: dict) -> str:
