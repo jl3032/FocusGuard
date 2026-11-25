@@ -407,20 +407,22 @@ class Main(ttk.Frame):
         self.log_text.tag_configure("you", foreground="#1a5fb4", font=("Helvetica", 12, "bold"))
         self.log_text.tag_configure("ai", foreground="#222")
         self.log_text.tag_configure("sys", foreground="#888", font=("Helvetica", 11, "italic"))
-        self.log_text.pack(fill="both", expand=True)
+        # The footer and the message box are packed from the bottom before the chat log,
+        # so a short window shrinks the log instead of cutting them off.
+        foot = ttk.Frame(self)
+        foot.pack(side="bottom", fill="x", pady=(8, 0))
+        self.version_label = ttk.Label(foot, text="Version: checking…", foreground="#888")
+        self.version_label.pack(side="left")
+        self.update_btn = ttk.Button(foot, text="Check for updates", command=self.check_updates)
+        self.update_btn.pack(side="right")
         row = ttk.Frame(self)
-        row.pack(fill="x", pady=(6, 0))
+        row.pack(side="bottom", fill="x", pady=(6, 0))
         self.entry = ttk.Entry(row)
         self.entry.pack(side="left", fill="x", expand=True)
         self.entry.bind("<Return>", lambda e: self.send())
         self.send_btn = ttk.Button(row, text="Send", command=self.send)
         self.send_btn.pack(side="left", padx=(6, 0))
-        foot = ttk.Frame(self)
-        foot.pack(fill="x", pady=(8, 0))
-        self.version_label = ttk.Label(foot, text="", foreground="#888")
-        self.version_label.pack(side="left")
-        self.update_btn = ttk.Button(foot, text="Check for updates", command=self.check_updates)
-        self.update_btn.pack(side="right")
+        self.log_text.pack(fill="both", expand=True)
 
         self.say("sys", 'Need a couple of specific sites for homework? "Start a task…" is quicker. '
                         'Or ask here, e.g. "I need youtube.com to watch the biology lecture my '
@@ -477,7 +479,8 @@ class Main(ttk.Frame):
             ago = int((now - b["at"]) // 60)
             self.blocks_box.insert("end", f"{b['target']} ({ago}m ago) — {b['reason']}")
         self.version_label.config(text=f"Version {self.version} · updates install automatically"
-                                  if self.version else "")
+                                  if self.version else "Version: unknown (service not reachable)")
+        self.app.title(f"FocusGuard — version {self.version}" if self.version else "FocusGuard")
         self.after(2000, self.refresh)
         threading.Thread(target=self.check_service, daemon=True).start()
 
