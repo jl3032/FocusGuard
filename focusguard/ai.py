@@ -589,7 +589,8 @@ def check_distraction(url: str, title: str, allowed_sites: list, limited_site: s
 SCREEN_SYSTEM = """You help FocusGuard, a focus tool the user installed on their own Mac. \
 You see a screenshot of the user's screen. The browser is on {site}, which they are \
 {why}. Judge what is actually on the screen (the browser's content, not other windows or \
-the Dock): a page title can say "Math Practice" while the screen shows a game.
+the Dock, and never the desktop wallpaper or background picture around the window): a \
+page title can say "Math Practice" while the screen shows a game.
 
 First write "topic": what you see on the screen, in a few words (e.g. "a car racing game", \
 "a Google Doc essay", "a video lecture on cells"). Then pick "category": learning, work, tool, \
@@ -605,7 +606,8 @@ learning or work. If you can't tell, answer unclear.
 
 SCREEN_VERIFY = """You double-check FocusGuard, a focus tool the user installed on their own \
 Mac. A first check looked at this screenshot and said it shows entertainment, which blocks the \
-page. Look again carefully. Keep "entertainment" only if the screen clearly shows content just \
+page. Look again carefully, at the web page only: a desktop wallpaper, background picture or \
+other window around it doesn't count. Keep "entertainment" only if the page clearly shows content just \
 for fun (a game being played, a gaming or prank video, memes, a social feed). Pick another \
 category if it shows schoolwork, documents, reading, a lesson or lecture, an educational \
 exercise, a list of results to pick from ("navigation"), or you can't tell ("unclear").

@@ -249,13 +249,47 @@ SCREENSHOT_PX = 768    # longest side: enough to tell a game from a document; bi
                        # pictures take the local AI much longer to look at
 
 
-def capture_screen():
-    """Screenshot of the main display as base64 JPEG, or None. Nothing is kept on disk."""
+HIDDEN = "hidden"
+
+
+def window_rect(app_name: str):
+    """(x, y, w, h) of the app's front window in screen points, HIDDEN if that window
+    is minimized or hidden (a screenshot would only show the desktop), or None if
+    it can't be told."""
+    try:
+        if osa(f"tell application {_q(app_name)} to get visible of front window",
+               timeout=3) == "false":
+            return HIDDEN
+    except (OSAError, AutomationDenied):
+        pass
+    try:
+        out = osa(f"tell application {_q(app_name)} to get bounds of front window", timeout=3)
+        left, top, right, bottom = (int(float(v)) for v in out.split(","))
+    except (OSAError, AutomationDenied, ValueError):
+        return None
+    if right - left < 100 or bottom - top < 100:
+        return None
+    return left, top, right - left, bottom - top
+
+
+def capture_screen(app_name: str = ""):
+    """Screenshot as base64 JPEG, or None. Nothing is kept on disk. With app_name, only
+    that app's front window is captured, so the wallpaper and other windows can't be
+    mistaken for what the user is doing; otherwise (or if that fails) the main display."""
     d = tempfile.mkdtemp(prefix="fg-")
     try:
         raw, small = os.path.join(d, "s.jpg"), os.path.join(d, "t.jpg")
-        r = subprocess.run(["screencapture", "-x", "-m", "-t", "jpg", raw],
-                           capture_output=True, timeout=10)
+        rect = window_rect(app_name) if app_name else None
+        if rect == HIDDEN:
+            return None
+        r = None
+        if rect:
+            r = subprocess.run(["screencapture", "-x", "-t", "jpg",
+                                "-R" + ",".join(map(str, rect)), raw],
+                               capture_output=True, timeout=10)
+        if not r or r.returncode != 0 or not os.path.exists(raw):
+            r = subprocess.run(["screencapture", "-x", "-m", "-t", "jpg", raw],
+                               capture_output=True, timeout=10)
         if r.returncode != 0 or not os.path.exists(raw):
             return None
         subprocess.run(["sips", "-Z", str(SCREENSHOT_PX), "-s", "formatOptions", "60", raw,

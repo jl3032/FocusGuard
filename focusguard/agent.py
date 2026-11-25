@@ -23,7 +23,7 @@ POLL_SECONDS = 1.0
 _asked_screen = [0.0]
 
 
-def add_screen(obs: dict):
+def add_screen(obs: dict, app_name: str = ""):
     """The root service asked to see the screen (to judge what's on the page)."""
     if not screen_access():
         if time.time() - _asked_screen[0] > 3600:
@@ -31,7 +31,7 @@ def add_screen(obs: dict):
             screen_access(ask=True)   # macOS shows its request / lists us in Settings
         obs["screen_denied"] = True
         return
-    shot = capture_screen()
+    shot = capture_screen(app_name)
     if shot:
         obs["screen"] = shot
 
@@ -68,9 +68,9 @@ def main():
     while True:
         started = time.time()
         try:
-            _, obs = observe(want_titles)
+            front, obs = observe(want_titles)
             if want_screen and obs.get("tab"):
-                add_screen(obs)
+                add_screen(obs, front.name if front else "")
             reply = request("observe", timeout=10, obs=obs)
             want_titles = set(reply.get("want_titles", []))
             want_screen = bool(reply.get("want_screen"))
