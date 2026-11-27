@@ -12,7 +12,7 @@ from tkinter import messagebox, simpledialog, ttk
 
 from .common import (DAY_NAMES, app_key, DAYS, DINNER_MINUTES, TASK_MAX_LINKS, TASK_MAX_MINUTES, mode,
                      today,
-                     ServiceError, api_key_saved, limited_items,
+                     ServiceError, api_key_saved, gemini_key_saved, limited_items,
                      load_config, load_state, normalize_domain, paused, request, seconds_left)
 from .ai import MODEL_SIZES, auto_size
 from .macos import BROWSERS, UNMONITORABLE_BROWSERS, hardware, installed_apps, run_admin
@@ -75,6 +75,7 @@ class Onboarding(ttk.Frame):
         self.site_vars = {}
         self.extra_apps = tk.StringVar()
         self.key_var = tk.StringVar()
+        self.gemini_key_var = tk.StringVar()
         self.app_info = installed_apps()     # name -> {"path", "bundle_id"}
         self.provider_var = tk.StringVar(value=self.cfg.get("provider", "ollama"))
         self.hw = hardware()
@@ -124,9 +125,20 @@ class Onboarding(ttk.Frame):
                      "Everything else is blocked. If you need something that's blocked, tell the "
                      "built-in AI. It only applies to this Mac user account.\n\n"
                      "Choose which AI to use:")
+        ttk.Radiobutton(self.body, variable=self.provider_var, value="gemini",
+                        text="Free, recommended: Google Gemini online (nothing to install or "
+                        "restart; page titles and screenshots go to Google)").pack(anchor="w", pady=2)
+        ttk.Label(self.body, text="Free Gemini key from aistudio.google.com/apikey (sign in with "
+                  "Google, click \"Create API key\"). If Gemini is offline or used up for the day, "
+                  "the local AI below steps in when Ollama is installed:").pack(anchor="w", padx=24)
+        ttk.Entry(self.body, textvariable=self.gemini_key_var, show="•", width=60
+                  ).pack(anchor="w", padx=24)
+        if gemini_key_saved():
+            ttk.Label(self.body, text="A Gemini key is already saved. Leave this blank to keep it.",
+                      foreground="#2a7").pack(anchor="w", padx=24, pady=4)
         ttk.Radiobutton(self.body, variable=self.provider_var, value="ollama",
                         text="Free: local AI on this Mac via Ollama (no key, nothing leaves your Mac)"
-                        ).pack(anchor="w", pady=2)
+                        ).pack(anchor="w", pady=(10, 2))
         ttk.Label(self.body, text="Model size (bigger is smarter but slower; it downloads "
                   "by itself and the old one is used meanwhile):").pack(anchor="w", padx=24)
         ttk.Combobox(self.body, textvariable=self.size_var, state="readonly", width=70,
@@ -281,6 +293,11 @@ class Onboarding(ttk.Frame):
             if self.cfg["provider"] == "anthropic" and not key and not api_key_saved():
                 messagebox.showwarning("FocusGuard", "Paste your Claude API key, or choose the free local AI.")
                 return False
+            if (self.cfg["provider"] == "gemini" and not self.gemini_key_var.get().strip()
+                    and not gemini_key_saved()):
+                messagebox.showwarning("FocusGuard", "Paste your free Gemini key "
+                                       "(from aistudio.google.com/apikey), or choose another AI.")
+                return False
         elif self.step == 2:
             self.sites_text_value = self.sites_text.get("1.0", "end")
         return True
@@ -325,6 +342,8 @@ class Onboarding(ttk.Frame):
         }
         if self.key_var.get().strip():
             new["_api_key"] = self.key_var.get().strip()
+        if self.gemini_key_var.get().strip():
+            new["_gemini_key"] = self.gemini_key_var.get().strip()
         fd, tmp = tempfile.mkstemp(prefix="focusguard-", suffix=".json")
         with os.fdopen(fd, "w") as f:
             json.dump(new, f)

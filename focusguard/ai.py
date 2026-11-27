@@ -1,7 +1,10 @@
 """The built-in AI: gatekeeper for unblock requests + activity judge.
 
-Two providers:
-- "ollama"    (default): free, runs on this Mac via Ollama, no API key, nothing leaves the computer.
+Three providers:
+- "gemini"    (default): Google Gemini's free tier. Online, needs a free key, nothing to keep
+               running on this Mac. If it can't answer (no internet, daily allowance used up)
+               and Ollama is installed, Ollama answers instead.
+- "ollama":    free, runs on this Mac via Ollama, no API key, nothing leaves the computer.
 - "anthropic": Claude API (paid, needs a key; smarter judgments).
 """
 from __future__ import annotations
@@ -15,8 +18,9 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 
-from .common import get_api_key, load_config, log
+from .common import get_api_key, get_gemini_key, load_config, log
 
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 
@@ -35,8 +39,20 @@ def _json_call(system: str, messages: list, schema: dict, effort: str = "low",
                priority: bool = False) -> dict:
     """kind="vision": the messages carry screenshots ("images": [base64 JPEG])."""
     cfg = load_config()
-    if cfg.get("provider", "ollama") == "anthropic":
+    provider = cfg.get("provider", "ollama")
+    if provider == "anthropic":
         return _claude_call(cfg, system, messages, schema, effort, max_tokens)
+    if provider == "gemini":
+        try:
+            return _gemini_call(cfg, system, messages, schema, timeout)
+        except GeminiUnavailable as e:
+            if not _ollama_installed():
+                raise AIError(str(e)) from e
+            log(f"Gemini couldn't answer ({e}); using the local AI instead")
+    return _ollama_turn(cfg, system, messages, schema, timeout, kind, priority)
+
+
+def _ollama_turn(cfg, system, messages, schema, timeout, kind, priority) -> dict:
     if not _take_turn(priority, wait=timeout):
         raise AIError("The free AI is busy with other checks. Try again in a moment.")
     _current.update(priority=priority, interrupted=False)
@@ -128,6 +144,13 @@ def _model_to_use(base: str, cfg: dict, kind: str = "model") -> str:
     if fallback:
         return fallback
     raise AIError(f"Downloading the free AI model ({want}) now. Try again in a few minutes.")
+
+
+def _ollama_installed() -> bool:
+    cfg = load_config()
+    return (any(Path(d, "Ollama.app").exists() for d in
+                ("/Applications", f"/Users/{cfg.get('user') or '_'}/Applications"))
+            or _ollama_up(cfg["ollama_url"].rstrip("/")))
 
 
 def _ollama_up(base: str) -> bool:
@@ -302,6 +325,147 @@ def _ollama_call(cfg: dict, system: str, messages: list, schema: dict, timeout: 
         return json.loads(text)
     except json.JSONDecodeError as e:
         raise AIError("The local AI returned malformed output. Try again.") from e
+
+
+# ------------------------------------------------------------- Gemini (free tier, online)
+GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
+
+
+class GeminiUnavailable(AIError):
+    """Gemini can't answer right now; the local AI may stand in."""
+
+
+_gemini = {"model": None, "model_at": 0.0, "skip_until": 0.0, "why": ""}
+_gemini_lock = threading.Lock()
+
+
+class _GeminiHTTP(Exception):
+    def __init__(self, code: int, detail: str):
+        super().__init__(f"{code}: {detail[:200]}")
+        self.code, self.detail = code, detail
+
+
+def _gemini_request(path: str, key: str, body: dict | None, timeout: float) -> dict:
+    req = urllib.request.Request(
+        GEMINI_BASE + path, method="POST" if body is not None else "GET",
+        data=json.dumps(body).encode() if body is not None else None,
+        headers={"Content-Type": "application/json", "x-goog-api-key": key})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        raise _GeminiHTTP(e.code, e.read().decode(errors="replace")) from e
+
+
+def _version(name: str) -> tuple:
+    import re
+    m = re.search(r"gemini-(\d+(?:\.\d+)?)", name)
+    return (float(m.group(1)) if m else 0.0,)
+
+
+def _gemini_model(cfg: dict, key: str) -> str:
+    """The configured model, or on "auto" the newest stable Flash-Lite: it has the biggest
+    free daily allowance, and it reads screenshots. Looked up once a day, so a retired
+    model name never breaks the app."""
+    if cfg.get("gemini_model", "auto") not in ("", "auto"):
+        return cfg["gemini_model"]
+    with _gemini_lock:
+        if _gemini["model"] and time.time() - _gemini["model_at"] < 86400:
+            return _gemini["model"]
+    names = []
+    page = ""
+    for _ in range(5):
+        data = _gemini_request(f"/models?pageSize=1000{'&pageToken=' + page if page else ''}",
+                               key, None, 15)
+        names += [m["name"].removeprefix("models/") for m in data.get("models", [])
+                  if "generateContent" in m.get("supportedGenerationMethods", [])]
+        page = data.get("nextPageToken", "")
+        if not page:
+            break
+    bad = ("preview", "exp", "image", "tts", "audio", "live", "thinking", "latest")
+    stable = [n for n in names if n.startswith("gemini-") and not any(b in n for b in bad)]
+    lite = [n for n in stable if "flash-lite" in n]
+    flash = [n for n in stable if "flash" in n and "lite" not in n]
+    for group in (lite, flash):
+        picks = sorted(group, key=_version, reverse=True)
+        if picks:
+            with _gemini_lock:
+                _gemini.update(model=picks[0], model_at=time.time())
+            return picks[0]
+    raise AIError("Couldn't find a Gemini model to use. Check the Gemini key in Setup.")
+
+
+def _gemini_parts(m: dict) -> list:
+    parts = [{"inlineData": {"mimeType": "image/jpeg", "data": img}} for img in m.get("images", [])]
+    return parts + [{"text": m["content"]}]
+
+
+def _gemini_call(cfg: dict, system: str, messages: list, schema: dict, timeout: float) -> dict:
+    key = get_gemini_key()
+    if not key:
+        raise GeminiUnavailable("No Gemini key is saved. Get a free one at "
+                                "aistudio.google.com/apikey and paste it in Setup.")
+    if time.time() < _gemini["skip_until"]:
+        raise GeminiUnavailable(_gemini["why"])
+    body = {
+        "systemInstruction": {"parts": [{"text": system}]},
+        "contents": [{"role": "model" if m["role"] == "assistant" else "user",
+                      "parts": _gemini_parts(m)} for m in messages],
+        "generationConfig": {"temperature": 0.1, "maxOutputTokens": 4000,
+                             "responseMimeType": "application/json",
+                             "responseJsonSchema": schema},
+    }
+    try:
+        model = _gemini_model(cfg, key)
+        path = f"/models/{model}:generateContent"
+        try:
+            data = _gemini_request(path, key, body, min(timeout, 60))
+        except _GeminiHTTP as e:
+            if e.code != 400 or "API key" in e.detail or "API_KEY" in e.detail:
+                raise
+            # This model doesn't take the strict schema: ask for JSON and describe the shape.
+            del body["generationConfig"]["responseJsonSchema"]
+            body["systemInstruction"]["parts"][0]["text"] += (
+                "\n\nReply with only a JSON object matching this JSON schema:\n" + json.dumps(schema))
+            data = _gemini_request(path, key, body, min(timeout, 60))
+    except _GeminiHTTP as e:
+        detail = e.detail
+        if e.code in (400, 403) and ("API key" in detail or "API_KEY" in detail):
+            raise AIError("Your Gemini key was rejected. Paste a new one in Setup "
+                          "(free at aistudio.google.com/apikey).") from e
+        if e.code == 404:
+            with _gemini_lock:
+                _gemini["model"] = None   # retired model: look again next time
+        if e.code == 429:
+            daily = "PerDay" in detail or "per day" in detail.lower()
+            if daily:
+                # The daily allowance resets at midnight Pacific time; check again hourly.
+                why, wait = "Gemini's free allowance for today is used up.", 3600
+            else:
+                why, wait = "Gemini is getting too many requests this minute.", 60
+            with _gemini_lock:
+                _gemini.update(skip_until=time.time() + wait, why=why)
+            log(f"Gemini: {why}")
+            raise GeminiUnavailable(why) from e
+        if e.code >= 500 or e.code == 404:
+            raise GeminiUnavailable(f"Gemini had a problem ({e.code}).") from e
+        raise AIError(f"Gemini error {e.code}: {detail[:200]}") from e
+    except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as e:
+        raise GeminiUnavailable("Couldn't reach Gemini (no internet?).") from e
+    except ValueError as e:
+        raise GeminiUnavailable("Gemini sent back something unreadable.") from e
+    cand = (data.get("candidates") or [{}])[0]
+    if cand.get("finishReason") == "MAX_TOKENS":
+        raise AIError("The AI's answer got cut off. Try again.")
+    text = "".join(p.get("text", "") for p in (cand.get("content") or {}).get("parts", [])
+                   if not p.get("thought"))
+    if not text:
+        reason = cand.get("finishReason") or (data.get("promptFeedback") or {}).get("blockReason")
+        raise GeminiUnavailable(f"Gemini gave no answer ({reason or 'empty'}).")
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as e:
+        raise GeminiUnavailable("Gemini returned malformed output.") from e
 
 
 # ------------------------------------------------------------- Claude (optional, paid)

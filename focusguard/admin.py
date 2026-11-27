@@ -9,7 +9,7 @@ import sys
 import time
 from pathlib import Path
 
-from .common import (AGENT_LABEL, DEFAULT_CONFIG, EDITABLE_KEYS, KEY_PATH, load_config, log,
+from .common import (AGENT_LABEL, DEFAULT_CONFIG, EDITABLE_KEYS, GEMINI_KEY_PATH, KEY_PATH, load_config, log,
                      normalize_domain, save_config, update_state)
 
 TESTING = os.environ.get("FOCUSGUARD_TEST") == "1"
@@ -59,12 +59,12 @@ def clean_config(data: dict, cfg: dict) -> dict:
         cfg["screen_checks"] = data["screen_checks"]
     if data.get("ai_model_size") in ("auto", "small", "medium", "large"):
         cfg["ai_model_size"] = data["ai_model_size"]
-    if data.get("provider") in ("ollama", "anthropic"):
+    if data.get("provider") in ("gemini", "ollama", "anthropic"):
         cfg["provider"] = data["provider"]
-    for key in ("ollama_model", "claude_model"):
+    for key in ("ollama_model", "claude_model", "gemini_model"):
         if isinstance(data.get(key), str) and data[key].strip():
             cfg[key] = data[key].strip()
-    unknown = set(data) - EDITABLE_KEYS - {"_api_key"}
+    unknown = set(data) - EDITABLE_KEYS - {"_api_key", "_gemini_key"}
     if unknown:
         log(f"admin: ignored unknown settings {sorted(unknown)}")
     cfg["onboarded"] = True
@@ -90,12 +90,13 @@ def main(argv: list) -> int:
         data = json.loads(src.read_text())
         cfg = clean_config(data, {**DEFAULT_CONFIG, **load_config()})
         save_config(cfg)
-        key = data.get("_api_key")
-        if isinstance(key, str) and key.strip():
-            fd = os.open(KEY_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            with os.fdopen(fd, "w") as f:
-                f.write(key.strip())
-            os.chmod(KEY_PATH, 0o600)
+        for field, path in (("_api_key", KEY_PATH), ("_gemini_key", GEMINI_KEY_PATH)):
+            key = data.get(field)
+            if isinstance(key, str) and key.strip():
+                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(fd, "w") as f:
+                    f.write(key.strip())
+                os.chmod(path, 0o600)
         try:
             src.unlink()
         except OSError:

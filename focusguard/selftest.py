@@ -191,6 +191,17 @@ def main():
           f"{'Apple Silicon' if hw['apple_silicon'] else 'Intel'}")
     print(f"  AI: {cfg.get('provider', 'ollama')}, size setting: {cfg.get('ai_model_size', 'auto')}"
           f" -> {ai.chosen_size(cfg)}")
+    if cfg.get("provider", "ollama") == "gemini":
+        from .common import get_gemini_key
+        key = get_gemini_key()
+        if not key:
+            print("  Problem: no Gemini key saved (Setup, or GEMINI_API_KEY)")
+            return
+        try:
+            print(f"  Gemini model: {ai._gemini_model(cfg, key)}")
+        except (ai.AIError, ai._GeminiHTTP, OSError) as e:
+            print(f"  Problem: {e}")
+            return
     if cfg.get("provider", "ollama") == "ollama":
         base = cfg["ollama_url"].rstrip("/")
         try:

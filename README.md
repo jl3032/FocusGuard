@@ -65,15 +65,15 @@ To remove it, double-click **`Uninstall FocusGuard.command`** (or run `zsh ~/Dow
 
 ### Which AI?
 
-| | Free (default) | Claude (optional) |
-|---|---|---|
-| Cost | $0 | Paid per use |
-| Key needed | No | Yes, from console.anthropic.com (stored where only root can read it) |
-| Privacy | Everything stays on your Mac | Page titles/URLs are sent to Anthropic |
-| Needs | Apple Silicon Mac (M1+), ~8 GB free memory, Ollama | Internet |
-| Judgment | Good | Better |
+| | Gemini (default) | Local / Ollama | Claude (optional) |
+|---|---|---|---|
+| Cost | $0 (Google's free tier) | $0 | Paid per use |
+| Key needed | Yes, free from aistudio.google.com/apikey | No | Yes, from console.anthropic.com |
+| Privacy | Page titles/URLs and screenshots are sent to Google | Everything stays on your Mac | Page titles/URLs are sent to Anthropic |
+| Needs | Internet | Apple Silicon Mac (M1+), ~8 GB free memory, Ollama | Internet |
+| Upkeep | None | Ollama has to be running | None |
 
-If Ollama isn't running, FocusGuard starts it. While the AI can't be reached, unlock requests fail and page checks are skipped.
+Keys are stored where only root can read them. With Gemini, FocusGuard uses the newest Flash-Lite model, which has the biggest free daily allowance. If Gemini can't answer (no internet, or the free allowance for the day is used up), the local AI answers instead when Ollama is installed. If Ollama isn't running, FocusGuard starts it. While no AI can be reached, unlock requests fail and page checks are skipped.
 
 Permissions macOS will ask for:
 - **Automation:** allow python to control Safari/Chrome and System Events. Without this, websites in that browser can't be checked (FocusGuard warns about it).
@@ -82,7 +82,7 @@ Permissions macOS will ask for:
 ## Settings
 
 Change them in the app (administrator password needed). They're stored in `/Library/Application Support/FocusGuard/config.json`:
-`allowed_apps` / `allowed_sites` (work), `limited_apps` / `limited_sites` (`[{"target": "chess.com", "minutes": 10}]`), `max_grant_minutes` (90), `distraction_penalty_minutes` (60), `on_task_check_seconds` (60), `provider` (`ollama` or `anthropic`), `ai_model_size` (`auto`, `small`, `medium` or `large`), `claude_model` (`claude-opus-5-5`). The log is `activity.log` in the same folder.
+`allowed_apps` / `allowed_sites` (work), `limited_apps` / `limited_sites` (`[{"target": "chess.com", "minutes": 10}]`), `max_grant_minutes` (90), `distraction_penalty_minutes` (60), `on_task_check_seconds` (60), `provider` (`gemini`, `ollama` or `anthropic`), `gemini_model` (`auto`), `ai_model_size` (`auto`, `small`, `medium` or `large`), `claude_model` (`claude-opus-5-5`). The log is `activity.log` in the same folder.
 
 ## Files
 

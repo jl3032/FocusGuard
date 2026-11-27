@@ -26,6 +26,7 @@ STATE_PATH = APP_DIR / "state.json"
 LOCK_PATH = APP_DIR / ".lock"
 LOG_PATH = APP_DIR / "activity.log"
 KEY_PATH = APP_DIR / "anthropic_key"          # root-only (0600)
+GEMINI_KEY_PATH = APP_DIR / "gemini_key"      # root-only (0600)
 SOCKET_PATH = os.environ.get("FOCUSGUARD_SOCKET", str(APP_DIR / "focusguard.sock"))
 REPO_DIR = Path(__file__).resolve().parent.parent
 BLOCK_PAGE = REPO_DIR / "assets" / "blocked.html"
@@ -65,8 +66,11 @@ DEFAULT_CONFIG = {
     "distraction_penalty_minutes": 60,
     "max_grant_minutes": 90,
     "on_task_check_seconds": 60,  # how often unlocked items are re-checked
-    # AI provider: "ollama" (free, runs locally, no key) or "anthropic" (Claude API key)
-    "provider": "ollama",
+    # AI provider: "gemini" (free Google key, runs online, nothing to keep running on this
+    # Mac; falls back to Ollama if it's installed and Gemini can't answer), "ollama" (free,
+    # runs locally, no key) or "anthropic" (Claude API key, paid)
+    "provider": "gemini",
+    "gemini_model": "auto",   # "auto": the newest Flash-Lite (biggest free daily allowance)
     # Size of the free local model: "auto" picks one that fits this Mac's chip and memory;
     # or "small" / "medium" / "large" (see ai.MODEL_SIZES).
     "ai_model_size": "auto",
@@ -319,6 +323,19 @@ def get_api_key():
 
 def api_key_saved() -> bool:
     return KEY_PATH.exists()
+
+
+def get_gemini_key():
+    if os.environ.get("GEMINI_API_KEY"):
+        return os.environ["GEMINI_API_KEY"]
+    try:
+        return GEMINI_KEY_PATH.read_text().strip() or None
+    except OSError:
+        return None
+
+
+def gemini_key_saved() -> bool:
+    return GEMINI_KEY_PATH.exists()
 
 
 # ---------------------------------------------------------------- talking to the root service
